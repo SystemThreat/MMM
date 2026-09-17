@@ -650,6 +650,8 @@ class GPUMiner {
         // res[7-i] against target[i] (MetalDAGShader.swift, metaldag_mine), so read
         // the hash reversed against the most-significant-first target here.
         var blocks = Set<UInt32>()
+        var bestZeros: UInt32 = 0
+        var bestNonce: UInt32 = found.first?.nonce ?? 0
         for f in found {
             var isBlock = true
             for i in 0..<8 {
@@ -657,8 +659,18 @@ class GPUMiner {
                 if hw != tw { isBlock = hw < tw; break }
             }
             if isBlock { blocks.insert(f.nonce) }
+            // Best share = leading zero bits of the hash, most-significant word first.
+            // The DAG kernel only returns hashes that met the share target, so the
+            // best of them is the best this batch produced.
+            var zeros: UInt32 = 0
+            for i in 0..<8 {
+                let w = f.hash[7 - i]
+                if w == 0 { zeros += 32; continue }
+                zeros += UInt32(w.leadingZeroBitCount); break
+            }
+            if zeros > bestZeros { bestZeros = zeros; bestNonce = f.nonce }
         }
-        var r = MineResult(hashes: UInt64(hashes), shares: shares, bestZeros: 0, bestNonce: found.first?.nonce ?? 0)
+        var r = MineResult(hashes: UInt64(hashes), shares: shares, bestZeros: bestZeros, bestNonce: bestNonce)
         r.blockNonces = blocks
         return r
     }
@@ -1323,6 +1335,11 @@ func main() {
                 s.difficulty = stratum.difficulty
                 s.bestShareBits = bestZeros
                 s.dagEpoch = dagSizing.epoch
+                s.dagEpochNextS = {
+                    let base = gpu.dagParams.baseTime, len = gpu.dagParams.epochSeconds
+                    let t = UInt64(nTime)
+                    return t > base ? Int(len - ((t - base) % len)) : Int(base - t)
+                }()
                 s.dagBytes = dagSizing.fullBytes
                 s.dagTrafficGBs = dagTrafficGBs
                 s.lastEvent = stratum.lastEvent

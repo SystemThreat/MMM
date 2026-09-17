@@ -55,6 +55,7 @@ struct MinerStatsSnapshot {
     var difficulty: Double = 1
     var bestShareBits: Int = 0
     var dagEpoch: UInt64 = 0
+    var dagEpochNextS: Int = 0
     var dagBytes: UInt64 = 0
     var dagTrafficGBs: Double = 0
     var systemMemoryBytes: UInt64 = 0
@@ -85,6 +86,7 @@ struct MinerStatsSnapshot {
         f.append(("difficulty", jsonNumber(difficulty)))
         f.append(("best_share_bits", String(bestShareBits)))
         f.append(("dag_epoch", String(dagEpoch)))
+        f.append(("dag_epoch_next_s", String(dagEpochNextS)))
         f.append(("dag_bytes", String(dagBytes)))
         f.append(("dag_traffic_gbs", jsonNumber(dagTrafficGBs)))
         f.append(("system_memory_bytes", String(systemMemoryBytes)))
