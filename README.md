@@ -1,5 +1,7 @@
 # MMM — Nerd Stats Edition
 
+Native Mac miner for xCoin Ӿ (XCF). Testnet A is live now; mainnet genesis is September 30, 2026.
+
 Native Apple Silicon macOS app wrapping the existing NerdMiner MetalDAG engine, with a local WebKit dashboard. macOS 14+ and Xcode Command Line Tools are required to build.
 
 ```sh
