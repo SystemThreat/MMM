@@ -31,3 +31,19 @@ Tetromino artwork reuses MineDifferent's HMAC-SHA256 / xorshift128 generator. Pa
 ## Automatic mining
 
 Start mining when MMM opens is enabled by default. Uncheck it in Setup to disable it; the checkbox saves immediately and does not stop a current session. On each app launch MMM makes one automatic start attempt using saved valid connection settings. Incomplete settings open Setup instead. Mainnet keeps its existing genesis checks. This does not add MMM as a macOS login item. Save Setup once after upgrading so any required pool password is stored in Keychain; macOS may request Keychain access after a rebuild.
+
+## Forum sign-in (MineDifferent)
+
+MMM ships the full NerdMiner engine inside the app bundle, including the `login`
+subcommand, so you already have everything the forum at
+[minedifferent.com](https://minedifferent.com) needs. There is no sign-in button
+in the GUI yet; use Terminal:
+
+```
+/Applications/MMM.app/Contents/Resources/NerdMiner login
+```
+
+It mints a challenge, signs it with your wallet key (index 101, the forum
+identity convention), and opens a one-time login link in your browser. A
+passphrase-protected wallet is asked for its passphrase right on that terminal.
+No password, no email: the account IS the post-quantum signature.
