@@ -698,6 +698,12 @@ class StratumClient {
     var blocksFound: UInt64 = 0
     var lastBlockHeight: Int?
     var lastEvent = "Connected — waiting for first share"
+    // Reconnect state: the engine used to ignore recv() EOF, so a pool restart
+    // left it hashing a dead job forever. Now it notices, drops the job, and
+    // retries with backoff until the pool answers again.
+    var connected = false
+    var nextRetryAt: Double = 0
+    var retryDelay: Double = 1
 
     let builder: HeaderBuilder
 
@@ -710,25 +716,70 @@ class StratumClient {
     func connect() -> Bool {
         socket = Darwin.socket(AF_INET, SOCK_STREAM, 0)
         guard socket >= 0 else { return false }
+        func fail() -> Bool { close(socket); socket = -1; return false }
 
         var hints = addrinfo()
         hints.ai_family = AF_INET
         hints.ai_socktype = SOCK_STREAM
         var res: UnsafeMutablePointer<addrinfo>?
 
-        guard getaddrinfo(config.host, String(config.port), &hints, &res) == 0, let ai = res else { return false }
+        guard getaddrinfo(config.host, String(config.port), &hints, &res) == 0, let ai = res else { return fail() }
         defer { freeaddrinfo(res) }
 
-        guard Darwin.connect(socket, ai.pointee.ai_addr, ai.pointee.ai_addrlen) == 0 else { return false }
-
+        // Non-blocking connect bounded at 5 s, so a dead pool can never hang the
+        // mining loop for the kernel's default TCP timeout.
         let flags = fcntl(socket, F_GETFL, 0)
         _ = fcntl(socket, F_SETFL, flags | O_NONBLOCK)
-
+        let rc = Darwin.connect(socket, ai.pointee.ai_addr, ai.pointee.ai_addrlen)
+        if rc != 0 {
+            guard errno == EINPROGRESS else { return fail() }
+            var pfd = pollfd(fd: socket, events: Int16(POLLOUT), revents: 0)
+            guard poll(&pfd, 1, 5000) > 0 else { return fail() }
+            var soerr: Int32 = 0
+            var len = socklen_t(MemoryLayout<Int32>.size)
+            guard getsockopt(socket, SOL_SOCKET, SO_ERROR, &soerr, &len) == 0, soerr == 0 else { return fail() }
+        }
+        connected = true
         return true
     }
 
+    func disconnect(_ reason: String) {
+        if socket >= 0 { close(socket) }
+        socket = -1
+        connected = false
+        authorized = false
+        currentJob = nil          // never mine a dead job
+        extranonce1 = ""
+        rxBytes.removeAll()
+        nextRetryAt = Date().timeIntervalSince1970 + retryDelay
+        lastEvent = "Pool connection lost (\(reason)) — reconnecting…"
+        if !dashboardActive { print("[NET] \(lastEvent)") }
+    }
+
+    func attemptReconnect() {
+        let now = Date().timeIntervalSince1970
+        guard now >= nextRetryAt else { Thread.sleep(forTimeInterval: 0.05); return }
+        if connect() {
+            retryDelay = 1
+            lastEvent = "Reconnected to the pool — resubscribing"
+            if !dashboardActive { print("[NET] \(lastEvent)") }
+            subscribe()
+            authorize()
+        } else {
+            retryDelay = min(retryDelay * 2, 30)
+            nextRetryAt = Date().timeIntervalSince1970 + retryDelay
+            lastEvent = "Pool unreachable — retrying in \(Int(retryDelay))s"
+            if !dashboardActive { print("[NET] \(lastEvent)") }
+        }
+    }
+
     func send(_ s: String) {
-        _ = s.withCString { Darwin.send(socket, $0, strlen($0), 0) }
+        guard socket >= 0 else { return }
+        let sent = s.withCString { Darwin.send(socket, $0, strlen($0), 0) }
+        if sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK {
+            disconnect("send failed")
+            return
+        }
         if !dashboardActive { print(s.contains("mining.authorize") ? "[SEND] mining.authorize [credentials redacted]" : "[SEND] \(s.trimmingCharacters(in: .newlines))") }
     }
 
@@ -773,8 +824,17 @@ class StratumClient {
         // bytes across reads and only hand complete lines to processMessage.
         // The previous version treated each <=8191-byte read as whole lines,
         // which silently dropped any job larger than one read.
+        if socket < 0 { attemptReconnect(); return }
         var buf = [UInt8](repeating: 0, count: 65536)
         let n = recv(socket, &buf, buf.count, 0)
+        if n == 0 {                                     // orderly EOF: the pool went away
+            disconnect("pool closed the connection")
+            return
+        }
+        if n < 0 && errno != EAGAIN && errno != EWOULDBLOCK {
+            disconnect("read error")
+            return
+        }
         if n > 0 {
             rxBytes.append(contentsOf: buf[0..<n])
             while let nl = rxBytes.firstIndex(of: 0x0A) {
