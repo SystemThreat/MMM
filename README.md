@@ -34,16 +34,15 @@ Start mining when MMM opens is enabled by default. Uncheck it in Setup to disabl
 
 ## Forum sign-in (MineDifferent)
 
-MMM ships the full NerdMiner engine inside the app bundle, including the `login`
-subcommand, so you already have everything the forum at
-[minedifferent.com](https://minedifferent.com) needs. There is no sign-in button
-in the GUI yet; use Terminal:
+Setup tab → **SIGN IN TO MINEDIFFERENT**. One click mints a challenge, signs it
+with this Mac's wallet key (index 101, the forum identity convention) using the
+bundled engine, and opens a one-time login link in your browser. If your wallet
+carries a passphrase, type it in the field first — it travels only over the
+engine's stdin, never argv or the environment. No password, no email: the
+account IS the post-quantum signature.
+
+The same thing from Terminal, if you prefer:
 
 ```
-/Applications/MMM.app/Contents/Resources/NerdMiner login
+~/Applications/MMM.app/Contents/Resources/NerdMiner login
 ```
-
-It mints a challenge, signs it with your wallet key (index 101, the forum
-identity convention), and opens a one-time login link in your browser. A
-passphrase-protected wallet is asked for its passphrase right on that terminal.
-No password, no email: the account IS the post-quantum signature.

@@ -97,7 +97,7 @@ private func runWallet(_ args: [String], passphrase: String?) throws -> (Int32, 
 /// signs as: the xid1… identity on current wallets, an address form on older ones).
 /// Returns (signedAs, pubkeyHex, sigHex, signedMessage). `signedAs` is taken verbatim
 /// from the wallet's "address" field and is never re-derived or prefix-checked here.
-private func walletSign(template: String, wallet: String?, index: Int) throws -> (String, String, String, String) {
+private func walletSign(template: String, wallet: String?, index: Int, passphraseStdin: Bool = false) throws -> (String, String, String, String) {
     guard let cli = walletCLIPath() else {
         throw LoginError("xcoin-wallet-cli not found. Set XCOIN_WALLET_CLI=/path/to/xcoin-wallet-cli or install the wallet next to NerdMiner in ./wallet/")
     }
@@ -121,7 +121,17 @@ private func walletSign(template: String, wallet: String?, index: Int) throws ->
     // terminal at all. The secret never appears in argv, in the environment, in
     // ps output or in shell history.
     if status != 0 && text.contains("no terminal available to ask for the passphrase") {
-        guard let pw = promptOnTTY("Wallet passphrase: ") else {
+        // --passphrase-stdin: a GUI (MMM) has no TTY to prompt on, so it writes
+        // the passphrase to our stdin at spawn and we read it here, lazily -
+        // only a wallet that actually needs one ever consumes the line.
+        let pw: String?
+        if passphraseStdin {
+            print("   reading wallet passphrase from stdin")
+            pw = readLine(strippingNewline: true) ?? ""
+        } else {
+            pw = promptOnTTY("Wallet passphrase: ")
+        }
+        guard let pw else {
             throw LoginError("wallet is passphrase-protected and no terminal is available. "
                            + "Run this from a terminal, or unlock the wallet another way.")
         }
@@ -143,7 +153,7 @@ private func walletSign(template: String, wallet: String?, index: Int) throws ->
 }
 
 func loginMain(_ argv: [String]) {
-    var server = defaultLoginServer, wallet: String? = nil, index = 101, challenge: String? = nil, openBrowser = true
+    var server = defaultLoginServer, wallet: String? = nil, index = 101, challenge: String? = nil, openBrowser = true, passphraseStdin = false
     var i = 0
     while i < argv.count {
         let a = argv[i]
@@ -152,9 +162,10 @@ func loginMain(_ argv: [String]) {
         case "--wallet", "--file": if i + 1 < argv.count { wallet = argv[i + 1]; i += 1 }
         case "--index": if i + 1 < argv.count { index = Int(argv[i + 1]) ?? 101; i += 1 }
         case "--no-open": openBrowser = false
+        case "--passphrase-stdin": passphraseStdin = true
         case "-h", "--help":
             print("""
-            nerdminer login [<challenge-id>] [--server URL] [--wallet PATH] [--index N] [--no-open]
+            nerdminer login [<challenge-id>] [--server URL] [--wallet PATH] [--index N] [--no-open] [--passphrase-stdin]
 
               Sign in to \(defaultLoginServer) with your xCoin identity (xid1…). Your key never leaves this Mac:
               the wallet CLI signs a short challenge with ML-DSA-65 and NerdMiner posts the signature.
@@ -166,6 +177,8 @@ func loginMain(_ argv: [String]) {
               --index N        key index (default 101, the forum identity convention)
               --server URL     forum origin (default \(defaultLoginServer))
               --no-open        print the login link instead of opening it
+              --passphrase-stdin  read the wallet passphrase from stdin if one is needed
+                               (for GUIs; never puts the secret in argv or the environment)
 
               Example:  NerdMiner login --index 101
             """)
@@ -196,7 +209,7 @@ func loginMain(_ argv: [String]) {
         //    The line stays "address:" on the wire (MineDifferent login v1); its value is
         //    the xid1… identity on current wallets.
         let template = "\(loginPrefix)\nchallenge: \(id)\naddress: {address}\nexpires: \(expires)"
-        let (signedAs, pk, sig, signed) = try walletSign(template: template, wallet: wallet, index: index)
+        let (signedAs, pk, sig, signed) = try walletSign(template: template, wallet: wallet, index: index, passphraseStdin: passphraseStdin)
         let expected = template.replacingOccurrences(of: "{address}", with: signedAs)
         guard signed == expected else { throw LoginError("wallet signed an unexpected message") }
         let form = signedAs.lowercased().hasPrefix("xid1") ? "identity" : "address (older wallet; the forum still derives it from the pubkey)"

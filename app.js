@@ -31,6 +31,7 @@ window.receive=async msg=>{
  case 'offline':blockData=[];minerData=[];blockRevision++;minerRevision++;chain={};render();$('connection').textContent='○ EXPLORER OFFLINE';$('blockRows').innerHTML='<tr><td colspan="4" class="empty">Explorer unavailable. Retrying every 5 seconds.</td></tr>';$('minerRows').innerHTML='<tr><td colspan="5" class="empty">Miner registry unavailable.</td></tr>';$('minerCount').textContent='— ONLINE';notice(msg.message);break;
  case 'networkError':minerData=[];minerRevision++;$('minerCount').textContent='REGISTRY UNAVAILABLE';$('minerRows').replaceChildren();break;
  case 'log':logText=(logText+'\n'+msg.message.replace(/\x1b\[[0-9;?]*[A-Za-z]/g,'')).slice(-18000);renderLog();break;
+ case 'loginStatus':$('loginState').textContent=msg.state==='running'?'SIGNING IN…':msg.state==='ok'?'✓ SIGNED IN — CHECK YOUR BROWSER':'✗ FAILED — SEE ENGINE LOG';$('loginBtn').disabled=msg.state==='running';if(msg.message)notice(msg.message);break;
  }
 };
 async function updateProfile(){$('networkLabel').textContent=profile.network==='mainnet'?'MAINNET / GENESIS VERIFIED BEFORE START':'TESTNET A / REHEARSAL';$('actionNote').textContent=profile.network==='mainnet'?'Uses the selected mainnet pool and genesis.':'Testnet rewards are rehearsal coins.';$('payout').replaceChildren(profile.address?await person(profile.address):el('span','Set your payout address below.'))}
@@ -61,3 +62,4 @@ let initialTheme;try{initialTheme=localStorage.getItem('mmm-theme')}catch{}apply
 $('themeToggle').onclick=()=>applyTheme(document.documentElement.dataset.theme!=='dark');selectTab('dashboard');
 
 $('autoStart').onchange=()=>send('autoStartPreference',{enabled:$('autoStart').checked});
+$('loginForm').onsubmit=e=>{e.preventDefault();send('login',{passphrase:String(new FormData(e.target).get('passphrase')||'')});e.target.reset()};

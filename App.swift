@@ -5,6 +5,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     var window: NSWindow!
     var web: WKWebView!
     var process: Process?
+    var loginProcess: Process?
     var miningActivity: NSObjectProtocol?
     var password = ""
     var didAttemptAutoStart = false
@@ -89,6 +90,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             UserDefaults.standard.set(enabled,forKey:"autoStartMining")
             emit(["type":"autoStartPreference","enabled":enabled])
         case "start": Task { await start() }
+        case "login": forumLogin(passphrase: b["passphrase"] as? String ?? "")
         case "stop": process?.terminate()
         case "refresh": refresh(); refreshMiner()
         case "minimize": window.miniaturize(nil)
@@ -166,6 +168,54 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         do { try task.run(); input.fileHandleForWriting.write(Data((password + "\n").utf8)); try? input.fileHandleForWriting.close(); process = task; miningActivity = ProcessInfo.processInfo.beginActivity(options:[.userInitiated,.idleSystemSleepDisabled],reason:"MMM background mining"); emit(["type":"started"]); refreshMiner(); refresh() }
         catch { emit(["type":"error","message":error.localizedDescription]) }
     }
+    // Sign in to MineDifferent with the bundled engine: `NerdMiner login` mints a
+    // challenge, the wallet CLI signs it with key index 101 (the forum identity),
+    // and we open the one-time link it prints. The passphrase travels only over
+    // the child's stdin, and only if the wallet actually asks for one.
+    func forumLogin(passphrase: String) {
+        guard loginProcess == nil else { return }
+        let task = Process()
+        task.executableURL = Bundle.main.url(forResource: "NerdMiner", withExtension: nil)
+        task.arguments = ["login", "--no-open", "--passphrase-stdin"]
+        let input = Pipe(), pipe = Pipe()
+        task.standardInput = input; task.standardOutput = pipe; task.standardError = pipe
+        var buffer = ""
+        var opened = false
+        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            buffer += text
+            var link: String? = nil
+            if !opened, let r = buffer.range(of: "https://[^\\s]+/l/[0-9a-f]{64}", options: .regularExpression) {
+                link = String(buffer[r]); opened = true
+            }
+            DispatchQueue.main.async {
+                self?.emit(["type": "log", "message": String(text.suffix(3000))])
+                if let link, let url = URL(string: link) {
+                    NSWorkspace.shared.open(url)
+                    self?.emit(["type": "loginStatus", "state": "ok", "message": "Signed in — your browser opened the one-time login link."])
+                }
+            }
+        }
+        task.terminationHandler = { [weak self] t in
+            pipe.fileHandleForReading.readabilityHandler = nil
+            DispatchQueue.main.async {
+                self?.loginProcess = nil
+                if t.terminationStatus != 0 {
+                    self?.emit(["type": "loginStatus", "state": "fail", "message": "Sign-in failed — the engine log below has the exact error."])
+                } else if !opened {
+                    self?.emit(["type": "loginStatus", "state": "ok", "message": "Signed in."])
+                }
+            }
+        }
+        do {
+            try task.run()
+            input.fileHandleForWriting.write(Data((passphrase + "\n").utf8))
+            try? input.fileHandleForWriting.close()
+            loginProcess = task
+            emit(["type": "loginStatus", "state": "running", "message": "Signing the forum challenge with this Mac's wallet key…"])
+        } catch { emit(["type": "loginStatus", "state": "fail", "message": error.localizedDescription]) }
+    }
     func showFullWindow() {
         if window.isMiniaturized { window.deminiaturize(nil) }
         window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps:true)
@@ -173,7 +223,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     func windowShouldClose(_ sender:NSWindow) -> Bool { sender.orderOut(nil); return false }
     func applicationShouldHandleReopen(_ sender:NSApplication, hasVisibleWindows flag:Bool) -> Bool { showFullWindow(); return true }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication) -> Bool { false }
-    func applicationWillTerminate(_ notification:Notification) { timer?.invalidate(); statsTimer?.invalidate(); menuBar?.invalidate(); process?.terminate() }
+    func applicationWillTerminate(_ notification:Notification) { timer?.invalidate(); statsTimer?.invalidate(); menuBar?.invalidate(); process?.terminate(); loginProcess?.terminate() }
     @MainActor func refreshMiner() {
         guard let owner = process, !statsBusy else { return }
         statsBusy = true
