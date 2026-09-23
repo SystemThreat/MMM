@@ -48,6 +48,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         emit(["type":"profile", "data":profile])
         emit(["type":"autoStartPreference","enabled":UserDefaults.standard.bool(forKey:"autoStartMining")])
+        emit(["type":"forumCred","saved":ForumCredential.exists()])
         statsTimer?.invalidate()
         statsTimer = Timer.scheduledTimer(withTimeInterval:2,repeats:true) { [weak self] _ in Task { @MainActor in self?.refreshMiner() } }
         if let statsTimer { RunLoop.main.add(statsTimer,forMode:.common) }
@@ -90,7 +91,17 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             UserDefaults.standard.set(enabled,forKey:"autoStartMining")
             emit(["type":"autoStartPreference","enabled":enabled])
         case "start": Task { await start() }
-        case "login": forumLogin(passphrase: b["passphrase"] as? String ?? "")
+        case "login": forumLogin(passphrase: b["passphrase"] as? String ?? "", remember: b["remember"] as? Bool ?? false)
+        case "loginTouch":
+            ForumCredential.authenticate { [weak self] ok, why in
+                guard let self else { return }
+                if ok, let pw = try? ForumCredential.load() { self.forumLogin(passphrase: pw, remember: false) }
+                else { self.emit(["type": "loginStatus", "state": "fail", "message": why ?? "Touch ID failed."]) }
+            }
+        case "loginForget":
+            ForumCredential.forget()
+            emit(["type": "forumCred", "saved": false])
+            emit(["type": "loginStatus", "state": "idle", "message": "Saved passphrase removed. Type it to sign in."])
         case "stop": process?.terminate()
         case "refresh": refresh(); refreshMiner()
         case "minimize": window.miniaturize(nil)
@@ -172,7 +183,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     // challenge, the wallet CLI signs it with key index 101 (the forum identity),
     // and we open the one-time link it prints. The passphrase travels only over
     // the child's stdin, and only if the wallet actually asks for one.
-    func forumLogin(passphrase: String) {
+    func forumLogin(passphrase: String, remember: Bool) {
         guard loginProcess == nil else { return }
         let task = Process()
         task.executableURL = Bundle.main.url(forResource: "NerdMiner", withExtension: nil)
@@ -203,8 +214,12 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                 self?.loginProcess = nil
                 if t.terminationStatus != 0 {
                     self?.emit(["type": "loginStatus", "state": "fail", "message": "Sign-in failed — the engine log below has the exact error."])
-                } else if !opened {
-                    self?.emit(["type": "loginStatus", "state": "ok", "message": "Signed in."])
+                } else {
+                    if !opened { self?.emit(["type": "loginStatus", "state": "ok", "message": "Signed in."]) }
+                    // remember only a passphrase that just proved itself
+                    if remember, !passphrase.isEmpty, (try? ForumCredential.save(passphrase)) != nil {
+                        self?.emit(["type": "forumCred", "saved": true])
+                    }
                 }
             }
         }

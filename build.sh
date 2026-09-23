@@ -38,7 +38,7 @@ run_step() {
 printf '\nMMM / BUILD + INSTALL\nFive stages · detailed logs in build/logs\n'
 mkdir -p build/module-cache build/MMM.app/Contents/{MacOS,Resources} build/MMM.iconset
 APP="$PWD/build/MMM.app"
-run_step "Compile MMM window and menu bar" swiftc -module-cache-path build/module-cache -O App.swift MenuBar.swift Pickaxe.swift PoolCredential.swift -o "$APP/Contents/MacOS/MMM" -framework Cocoa -framework WebKit -framework Security
+run_step "Compile MMM window and menu bar" swiftc -module-cache-path build/module-cache -O App.swift MenuBar.swift Pickaxe.swift PoolCredential.swift ForumCredential.swift -o "$APP/Contents/MacOS/MMM" -framework Cocoa -framework WebKit -framework Security -framework LocalAuthentication
 run_step "Compile and optimize MetalDAG mining engine" swiftc -module-cache-path build/module-cache -O Engine/main.swift Engine/Login.swift Engine/StatsServer.swift Engine/MetalDAGEngine.swift Engine/MetalDAGShader.swift -o "$APP/Contents/Resources/NerdMiner" -framework Metal -framework CoreGraphics
 run_step "Bundle four-tab dashboard and themes" cp index.html style.css app.js identicon.js pickaxe-white.svg "$APP/Contents/Resources/"
 run_step "Compile icon renderer" swiftc -module-cache-path build/module-cache Icon.swift -o build/make-icon

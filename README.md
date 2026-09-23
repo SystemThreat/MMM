@@ -38,8 +38,12 @@ Setup tab → **SIGN IN TO MINEDIFFERENT**. One click mints a challenge, signs i
 with this Mac's wallet key (index 101, the forum identity convention) using the
 bundled engine, and opens a one-time login link in your browser. If your wallet
 carries a passphrase, type it in the field first — it travels only over the
-engine's stdin, never argv or the environment. No password, no email: the
-account IS the post-quantum signature.
+engine's stdin, never argv or the environment. Leave **Remember with Touch ID**
+checked and, after the first sign-in that works, the passphrase is kept in your
+login Keychain: from then on the button is SIGN IN WITH TOUCH ID and reading it
+back always demands Touch ID (or your Mac password when the lid is closed).
+FORGET SAVED PASSPHRASE removes it. No password, no email: the account IS the
+post-quantum signature.
 
 The same thing from Terminal, if you prefer:
 
