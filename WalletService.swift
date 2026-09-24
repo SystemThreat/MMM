@@ -12,6 +12,16 @@ import Foundation
 enum WalletService {
     struct CLIResult { let code: Int32; let stdout: String; let stderr: String }
 
+    /// Every CLI child still running. A child blocked in a smart-card call
+    /// outlives its timeout timer if MMM quits, and an orphan stuck in
+    /// SCardConnect blocks every later card tap — so MMM kills them on quit.
+    private static let lock = NSLock()
+    private static var running: [ObjectIdentifier: Process] = [:]
+    static func terminateAll() {
+        lock.lock(); let procs = Array(running.values); lock.unlock()
+        for p in procs where p.isRunning { p.terminate() }
+    }
+
     /// Locate the wallet CLI launcher. Order: $XCOIN_WALLET_CLI, the copy
     /// bundled in MMM.app (Resources/wallet/), then the canonical install.
     static func cliPath() -> String? {
@@ -38,7 +48,10 @@ enum WalletService {
             p.arguments = ["--passphrase-fd", "0"] + args
             let inPipe = Pipe(), outPipe = Pipe(), errPipe = Pipe()
             p.standardInput = inPipe; p.standardOutput = outPipe; p.standardError = errPipe
+            p.terminationHandler = { proc in lock.lock(); running.removeValue(forKey: ObjectIdentifier(proc)); lock.unlock() }
+            lock.lock(); running[ObjectIdentifier(p)] = p; lock.unlock()
             do { try p.run() } catch {
+                lock.lock(); running.removeValue(forKey: ObjectIdentifier(p)); lock.unlock()
                 DispatchQueue.main.async { done(CLIResult(code: -1, stdout: "", stderr: error.localizedDescription)) }
                 return
             }

@@ -612,7 +612,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     func windowShouldClose(_ sender:NSWindow) -> Bool { sender.orderOut(nil); return false }
     func applicationShouldHandleReopen(_ sender:NSApplication, hasVisibleWindows flag:Bool) -> Bool { showFullWindow(); return true }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication) -> Bool { false }
-    func applicationWillTerminate(_ notification:Notification) { timer?.invalidate(); statsTimer?.invalidate(); menuBar?.invalidate(); process?.terminate(); loginProcess?.terminate() }
+    func applicationWillTerminate(_ notification:Notification) { timer?.invalidate(); statsTimer?.invalidate(); menuBar?.invalidate(); process?.terminate(); loginProcess?.terminate(); WalletService.terminateAll() }
     @MainActor func refreshMiner() {
         guard let owner = process, !statsBusy else { return }
         statsBusy = true
