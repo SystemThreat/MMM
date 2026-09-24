@@ -34,8 +34,8 @@ window.receive=async msg=>{
  case 'loginStatus':$('loginState').textContent=msg.state==='running'?'SIGNING IN…':msg.state==='ok'?'✓ SIGNED IN — CHECK YOUR BROWSER':msg.state==='idle'?'NOT SIGNED IN':'✗ FAILED — SEE ENGINE LOG';$('loginBtn').disabled=msg.state==='running';if(msg.message)notice(msg.message);break;
  case 'forumCred':forumSaved=!!msg.saved;renderForum();break;
  case 'wallet':wallet=msg.data;renderWallet();break;
- case 'walletStatus':$('walletState').textContent=msg.state==='working'?'WORKING…':msg.state==='ok'?'✓ UNLOCKED':'✗ FAILED';if(msg.state==='fail')notice(msg.message||'Wallet action failed.');$('walletUnlockBtn').disabled=$('walletSendBtn').disabled=msg.state==='working';break;
- case 'walletSeed':{const b=$('walletSeedBox');b.hidden=false;b.replaceChildren(el('b','MASTER SEED OF '+msg.name+' — WRITE IT ON PAPER NOW. It is shown ONCE and never again; anyone with it controls the wallet.'),el('code',msg.seed),(()=>{const d=el('button','I WROTE IT DOWN — HIDE ✕');d.type='button';d.onclick=()=>{b.replaceChildren();b.hidden=true};return d})());break}
+ case 'walletStatus':if(!$('view-create').hidden){$('createState').textContent=msg.state==='working'?'WORKING…':msg.state==='ok'?'✓ DONE':'✗ FAILED';$('createBtn').disabled=msg.state==='working';if(msg.message)notice(msg.message)}$('walletState').textContent=msg.state==='working'?'WORKING…':msg.state==='ok'?'✓ UNLOCKED':'✗ FAILED';if(msg.state==='fail')notice(msg.message||'Wallet action failed.');$('walletUnlockBtn').disabled=$('walletSendBtn').disabled=msg.state==='working';break;
+ case 'walletSeed':{const b=$('walletSeedBox');b.hidden=false;b.replaceChildren(el('b','MASTER SEED OF '+msg.name+' — WRITE IT ON PAPER NOW. It is shown ONCE and never again; anyone with it controls the wallet.'),el('code',msg.seed),(()=>{const d=el('button','I WROTE IT DOWN — OPEN WALLET ↗');d.type='button';d.onclick=()=>{b.replaceChildren();b.hidden=true;$('walletCreateForm').elements.name.value='';selectTab('wallet')};return d})());break}
  case 'walletSent':{$('walletUnlockBtn').disabled=$('walletSendBtn').disabled=false;const r=$('walletReceipt');r.hidden=false;const a=el('a',msg.txid.slice(0,20)+'…');a.href='#';a.onclick=e=>{e.preventDefault();send('open',{path:'/tx/'+msg.txid})};r.replaceChildren(el('b','SENT ✓ '),a,el('span',' · fee '+msg.fee+' XCF · '+msg.vsize+' vB'));$('walletSendForm').reset();notice('Sent. The explorer shows it once the next block confirms it.');break}
  }
 };
@@ -50,9 +50,9 @@ function decodeScript(hex,hrp){if(!/^5320[0-9a-f]{64}$/i.test(hex||''))return ''
 function selectTab(name){
  if(!tabNames.includes(name))name='dashboard';
  for(const key of tabNames){const active=key===name;$('view-'+key).hidden=!active;$('view-'+key).classList.toggle('active',active);$('tab-'+key).classList.toggle('selected',active);$('tab-'+key).setAttribute('aria-selected',String(active));$('tab-'+key).tabIndex=active?0:-1}
- if(name==='blocks')renderBlocks();if(name==='miners')renderMiners();if(name==='setup')renderLog();if(name==='wallet')send('walletRefresh');
+ if(name==='blocks')renderBlocks();if(name==='miners')renderMiners();if(name==='setup')renderLog();if(name==='wallet'||name==='create')send('walletRefresh');
 }
-const tabNames=['dashboard','blocks','miners','wallet','setup'];
+const tabNames=['dashboard','blocks','miners','wallet','create','setup'];
 for(const name of tabNames){const tab=$('tab-'+name);tab.onclick=e=>{e.preventDefault();selectTab(name)};tab.onkeydown=e=>{const n=tabNames.length;let i=tabNames.indexOf(name);if(e.key==='ArrowRight')i=(i+1)%n;else if(e.key==='ArrowLeft')i=(i+n-1)%n;else if(e.key==='Home')i=0;else if(e.key==='End')i=n-1;else return;e.preventDefault();selectTab(tabNames[i]);$('tab-'+tabNames[i]).focus()}}
 function pageInfo(kind,total){const wrap=$(kind).querySelector('.table-wrap');const style=getComputedStyle($(kind).querySelector('table'));const rowHeight=parseFloat(style.getPropertyValue('--table-row-height'))||72;const headHeight=parseFloat(style.getPropertyValue('--table-head-height'))||42;const count=Math.max(1,Math.floor((wrap.clientHeight-headHeight)/rowHeight));const pages=Math.max(1,Math.ceil(total/count));let page=kind==='blocks'?blockPage:minerPage;page=Math.min(page,pages-1);if(kind==='blocks')blockPage=page;else minerPage=page;$(kind+'Page').textContent=`${page+1} / ${pages} · ${total} ${kind==='blocks'?'recent blocks':'miners'}`;$(kind+'Prev').disabled=page===0;$(kind+'Next').disabled=page>=pages-1;return {start:page*count,count}}
 async function renderBlocks(){if($('view-blocks').hidden)return;const revision=++blockRevision;const {start,count}=pageInfo('blocks',blockData.length);const rows=await Promise.all(blockData.slice(start,start+count).map(async b=>{const tr=el('tr'),height=el('td'),a=el('a','#'+fmt(b.height));a.href='#';a.onclick=e=>{e.preventDefault();send('open',{path:'/block/'+b.height})};height.append(a);const payouts=(b.tx?.[0]?.vout||[]).filter(o=>o.value>0);const who=el('td');if(payouts.length){const sp=payouts[0].scriptPubKey||{};who.append(await person(sp.address||sp.addresses?.[0]||decodeScript(sp.hex,profile.network==='mainnet'?'xpa':'txa'),payouts.length>1?`+ ${payouts.length-1} other payout outputs`:''))}else who.textContent='No spendable payout';tr.append(height,who,el('td',fmt(payouts.reduce((n,o)=>n+o.value,0),8)+' XCF'),el('td',age(b.time)));return tr}));if(revision!==blockRevision)return;$('blockRows').replaceChildren(...rows);if(!rows.length)$('blockRows').innerHTML='<tr><td colspan="4" class="empty">No verified blocks available.</td></tr>'}
@@ -73,8 +73,14 @@ $('loginForm').onsubmit=e=>{e.preventDefault();if(forumSaved){send('loginTouch')
 $('forgetBtn').onclick=()=>send('loginForget');
 renderForum();
 
+function renderCreate(){
+ const f=$('walletCreateForm');
+ $('createBtn').disabled=wallet.cliFound===false;
+ if(wallet.cliFound===false){$('createState').textContent='✗ WALLET CLI NOT FOUND';return}
+ if(!f.elements.name.value){const ns=(wallet.wallets||[]).map(w=>/wallet(\d+)\.mmm$/.exec(w.name)).filter(Boolean).map(m=>+m[1]);f.elements.name.value='wallet'+String(Math.max(0,...ns)+1).padStart(3,'0')+'.mmm'}
+}
 // ── WALLET tab: balances from the explorer, sends via the offline keytool ────
-let wallet={},walletRevision=0,walletCreating=false;
+let wallet={},walletRevision=0;
 const xcfFmt=sats=>(sats/1e8).toLocaleString(undefined,{maximumFractionDigits:8});
 async function renderWallet(){
  const revision=++walletRevision;
@@ -92,10 +98,9 @@ async function renderWallet(){
   :'Touch ID approves every send. Signing is offline on this Mac; the explorer only relays.';
  const unlocked=!!wallet.walletAddress;
  $('walletState').textContent=wallet.cliFound===false?'✗ WALLET CLI NOT FOUND':unlocked?'✓ UNLOCKED':'LOCKED';
- $('walletUnlockForm').hidden=walletCreating||unlocked||wallet.cliFound===false;
- $('walletSendForm').hidden=walletCreating||!unlocked||wallet.cliFound===false;
- $('walletCreateForm').hidden=!walletCreating||wallet.cliFound===false;
- if(walletCreating&&!$('walletCreateForm').elements.name.value){const ns=(wallet.wallets||[]).map(f=>/^wallet(\d+)\.mmm$/.exec(f.name)).filter(Boolean).map(m=>+m[1]);const base=(wallet.wallets||[]).some(f=>f.name==='wallet.mmm')?2:0;$('walletCreateForm').elements.name.value='wallet'+String(Math.max(base,...ns,3)+1).padStart(3,'0')+'.mmm'}
+ $('walletUnlockForm').hidden=unlocked||wallet.cliFound===false;
+ $('walletSendForm').hidden=!unlocked||wallet.cliFound===false;
+ renderCreate();
  if(wallet.cliFound===false){box.append(el('p','Install the wallet CLI (github.com/SystemThreat/xcoin-wallet) to ~/x-Coin/wallet-cli, then reopen this tab.','empty'));return}
  $('walletSendForm').elements.dest.placeholder=(profile.network==='mainnet'?'xpa1r…':'txa1r…');
  const rows=[];
@@ -122,6 +127,4 @@ $('walletSendForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.targe
 $('walletFileSel').onchange=e=>{$('walletReceipt').hidden=true;send('walletSelect',{file:e.target.value,index:Math.max(0,Number($('walletIdx').value)||0)})};
 $('walletIdx').onchange=()=>{$('walletReceipt').hidden=true;send('walletSelect',{file:$('walletFileSel').value,index:Math.max(0,Number($('walletIdx').value)||0)})};
 $('walletBrowse').onclick=()=>send('walletBrowse');
-$('walletNewBtn').onclick=()=>{walletCreating=true;renderWallet()};
-$('walletCreateCancel').onclick=()=>{walletCreating=false;$('walletCreateForm').reset();renderWallet()};
-$('walletCreateForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);if(String(f.get('pass')||'')!==String(f.get('pass2')||'')){notice('Passphrases do not match.');return}walletCreating=false;send('walletCreate',{name:String(f.get('name')||'').trim(),passphrase:String(f.get('pass')||''),card:f.get('card')==='on'});e.target.reset()};
+$('walletCreateForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);if(String(f.get('pass')||'')!==String(f.get('pass2')||'')){$('createState').textContent='✗ PASSPHRASES DIFFER';notice('Passphrases do not match.');return}$('walletSeedBox').hidden=true;send('walletCreate',{name:String(f.get('name')||'').trim(),passphrase:String(f.get('pass')||''),card:f.get('card')==='on'});e.target.elements.pass.value='';e.target.elements.pass2.value=''};

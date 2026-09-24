@@ -46,7 +46,6 @@ body{font-size:16px;letter-spacing:.035em}.brand{font-size:28px;letter-spacing:.
 .wallet-note{font-size:10px;color:var(--muted);line-height:1.45;margin:0;flex:1}
 .wallet-receipt{padding:7px 12px;border:2px solid var(--ink);background:var(--lime);font-size:10px;white-space:nowrap}
 [data-theme=dark] .wallet-receipt{color:#101600;border-color:#89ad28}
-#walletCreateForm label:first-child{flex:0 0 170px}
 .wallet-seed{border:3px solid var(--ink);background:var(--lime);padding:10px 14px;display:flex;flex-direction:column;gap:8px}
 .wallet-seed b{font-size:10px;letter-spacing:.5px}
 .wallet-seed code{font-size:13px;font-weight:bold;word-break:break-all;user-select:all}
@@ -54,3 +53,18 @@ body{font-size:16px;letter-spacing:.035em}.brand{font-size:28px;letter-spacing:.
 [data-theme=dark] .wallet-seed{color:#101600;border-color:#89ad28}
 
 #view-wallet [hidden]{display:none!important}
+/* NEW WALLET tab */
+#view-create [hidden]{display:none!important}
+#view-create .workspace{flex:1;min-height:0;display:flex;flex-direction:column;margin-bottom:0;overflow:auto}
+.create-body{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,420px);gap:28px;padding:16px}
+.create-intro p{margin:0 0 10px;font-size:11px;line-height:1.55;color:var(--muted)}
+.create-intro b{color:var(--ink)}
+.create-intro code{font-size:11px}
+#walletCreateForm{display:flex;flex-direction:column;gap:12px;margin:0}
+#walletCreateForm label{display:flex;flex-direction:column;gap:5px;font-size:9px;font-weight:bold;letter-spacing:1px}
+#walletCreateForm label.autostart-option{flex-direction:row;font-size:12px;letter-spacing:.02em}
+#walletCreateForm input:not([type=checkbox]){border:2px solid var(--ink);padding:9px 11px;background:var(--paper);font-size:12px}
+#walletCreateForm button{align-self:flex-start}
+#view-create .wallet-seed{margin:0 16px 16px}
+@media (max-width:820px){.create-body{grid-template-columns:1fr}}
+
