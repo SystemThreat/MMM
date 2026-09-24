@@ -106,6 +106,23 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "walletRefresh": walletRefresh()
         case "walletUnlock": walletUnlock(passphrase: b["passphrase"] as? String ?? "", remember: b["remember"] as? Bool ?? false)
         case "walletSelect": if let f = b["file"] as? String { walletSelect(file: f, index: b["index"] as? Int) }
+        case "walletWatchAdd":
+            if let a = (b["address"] as? String)?.trimmingCharacters(in: .whitespaces).lowercased(),
+               validAddress(a, hrp: walletHrp()) {
+                var w = UserDefaults.standard.stringArray(forKey: "walletWatched") ?? []
+                if !w.contains(a) { w.append(a) }
+                UserDefaults.standard.set(w, forKey: "walletWatched")
+                walletRefresh()
+            } else {
+                emit(["type": "walletStatus", "state": "fail", "message": "Not a valid \(walletHrp())1r… address to watch."])
+            }
+        case "walletWatchRemove":
+            if let a = b["address"] as? String {
+                var w = UserDefaults.standard.stringArray(forKey: "walletWatched") ?? []
+                w.removeAll { $0 == a }
+                UserDefaults.standard.set(w, forKey: "walletWatched")
+                walletRefresh()
+            }
         case "walletBrowse": Task { @MainActor in walletBrowse() }
         case "walletSend":
             guard let dest = b["dest"] as? String, let amount = b["amount"] as? String else { return }
@@ -275,6 +292,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                 "selectedIsDefault": sel?.isDefault ?? false,
                 "needsPassphraseEntry": hasPass && !credUsable,
                 "credSaved": ForumCredential.exists(),
+                "watched": UserDefaults.standard.stringArray(forKey: "walletWatched") ?? [],
                 "cliFound": WalletService.cliPath() != nil]
     }
     @MainActor func walletRefresh() {
@@ -283,8 +301,11 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         Task { @MainActor in
             var balances: [String: Any] = [:]
             var seen = Set<String>()
-            for key in ["payout", "walletAddress"] {
-                guard let addr = state[key] as? String, !addr.isEmpty, !seen.contains(addr) else { continue }
+            var lookups: [String] = []
+            for key in ["payout", "walletAddress"] { if let a = state[key] as? String { lookups.append(a) } }
+            lookups += (state["watched"] as? [String]) ?? []
+            for addr in lookups {
+                guard !addr.isEmpty, !seen.contains(addr) else { continue }
                 seen.insert(addr)
                 if let u = try? await get(origin + "/api/utxos/" + addr) {
                     var spendable = 0, immature = 0

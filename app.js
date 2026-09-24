@@ -98,17 +98,22 @@ async function renderWallet(){
  const rows=[];
  if(wallet.walletAddress)rows.push(['SELECTED WALLET \u00b7 INDEX '+(wallet.selectedIndex??0)+' (SENDS FROM HERE)',wallet.walletAddress]);
  if(wallet.payout&&wallet.payout!==wallet.walletAddress)rows.push(['MINING PAYOUT ADDRESS',wallet.payout]);
+ for(const a of (wallet.watched||[]))if(a!==wallet.payout&&a!==wallet.walletAddress)rows.push(['WATCHED',a,true]);
  if(!rows.length){box.append(el('p','Unlock to derive this Mac\u2019s wallet address; set a payout address in SETUP to watch it here.','empty'));return}
- for(const [label,addr] of rows){
+ for(const [label,addr,removable] of rows){
   const row=el('div','','wallet-row');const b=(wallet.balances||{})[addr];
   row.append(el('label',label));row.append(await person(addr));
   row.append(el('strong',b?xcfFmt(b.spendable_sats)+' XCF':'—'));
-  row.append(el('small',b?(b.immature_sats>0?'+ '+xcfFmt(b.immature_sats)+' maturing':'spendable'):'explorer unavailable'));
+  const note=b?(b.immature_sats>0?'+ '+xcfFmt(b.immature_sats)+' maturing':'spendable'):'explorer unavailable';
+  const small=el('small',note);
+  if(removable){const x=el('button',' ✕','text-button');x.type='button';x.title='stop watching';x.onclick=()=>send('walletWatchRemove',{address:addr});small.append(x)}
+  row.append(small);
   if(revision!==walletRevision)return;
   box.append(row);
  }
  if(wallet.payout&&wallet.walletAddress&&wallet.payout!==wallet.walletAddress)box.append(el('p','Your payout address is not this wallet\u2019s key 0 — sends draw from the wallet balance above. Point mining at the wallet address to make them one.','wallet-note'));
 }
+$('walletWatchForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);send('walletWatchAdd',{address:String(f.get('address')||'').trim()});e.target.reset()};
 $('walletUnlockForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);send('walletUnlock',{passphrase:String(f.get('passphrase')||''),remember:f.get('remember')==='on'});e.target.reset()};
 $('walletSendForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);$('walletReceipt').hidden=true;send('walletSend',{dest:String(f.get('dest')||'').trim(),amount:String(f.get('amount')||'').trim(),passphrase:String(f.get('passphrase')||'')});e.target.elements.passphrase.value=''};
 $('walletFileSel').onchange=e=>{$('walletReceipt').hidden=true;send('walletSelect',{file:e.target.value,index:Math.max(0,Number($('walletIdx').value)||0)})};

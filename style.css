@@ -42,4 +42,8 @@ body{font-size:16px;letter-spacing:.035em}.brand{font-size:28px;letter-spacing:.
 .wallet-picker #walletFormat{font-size:10px;font-weight:bold;color:var(--muted);padding-bottom:12px}
 .wallet-picker .wallet-idx{flex:0 0 110px;max-width:110px}
 .wallet-picker input[type=number]{border:2px solid var(--ink);padding:10px 12px;background:var(--paper);width:100%}
+#walletWatchForm{display:flex;align-items:end;gap:14px;margin:0 0 18px}
+#walletWatchForm label{display:flex;flex-direction:column;gap:7px;font-size:10px;font-weight:bold;letter-spacing:1px;flex:1;max-width:560px}
+#walletWatchForm input{border:2px solid var(--ink);padding:10px 12px;background:var(--paper)}
+.wallet-row small button{margin-left:8px}
 
