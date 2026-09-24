@@ -85,19 +85,24 @@ final class MenuBarController: NSObject {
         case "miner":
             guard mining else { return }
             let s = event["data"] as? [String:Any] ?? [:]
-            hashrate = s["hashrate_pretty"] as? String ?? "— H/s"
-            rate.stringValue = hashrate; state.stringValue = (s["running"] as? Bool == true) ? "● MINING" : "ENGINE INITIALIZING"
+            let down = s["pool_connected"] as? Bool == false   // hashing is paused until the pool answers
+            hashrate = down ? "Reconnecting…" : s["hashrate_pretty"] as? String ?? "— H/s"
+            rate.stringValue = down ? "— H/s" : hashrate
+            state.stringValue = down ? "RECONNECTING" : (s["running"] as? Bool == true) ? "● MINING" : "ENGINE INITIALIZING"
             let accepted = s["accepted"] as? NSNumber ?? 0, rejected = s["rejected"] as? NSNumber ?? 0
             let blocks = s["blocks_found"] as? NSNumber ?? 0, seconds = s["uptime_s"] as? Int ?? 0
             counts.stringValue = "Accepted \(accepted)   ·   Rejected \(rejected)\nBlocks \(blocks)   ·   Uptime \(seconds / 3600)h \((seconds % 3600) / 60)m"
-            message.stringValue = s["last_event"] as? String ?? "Mining in the background."
+            message.stringValue = down ? "Pool connection lost — \(s["pool_status"] as? String ?? "reconnecting"). Hashing is paused until the pool answers."
+                                       : s["last_event"] as? String ?? "Mining in the background."
         case "minerPending":
             guard mining else { return }; hashrate = "Waiting…"; rate.stringValue = "— H/s"
             state.stringValue = "WAITING FOR ENGINE"; message.stringValue = "Local statistics are unavailable. Waiting for the engine to respond."
         case "stopped":
             mining = false; hashrate = "Idle"; rate.stringValue = "— H/s"; state.stringValue = "MINER STOPPED"
             stop.isEnabled = false; animation?.invalidate(); animation = nil; frame = 0
-            message.stringValue = "Open the full view to start another session."
+            let code = (event["code"] as? NSNumber)?.intValue ?? 0   // 0 = done, 15 = SIGTERM (STOP / quit)
+            message.stringValue = [0, 15].contains(code) ? "Open the full view to start another session."
+                : (event["reason"] as? String).map { "Engine exited (\(code)): \($0)" } ?? "Engine exited (\(code)). Check the engine log."
         case "error": message.stringValue = event["message"] as? String ?? "Check the full view."
         default: break
         }

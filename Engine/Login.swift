@@ -204,7 +204,7 @@ func loginMain(_ argv: [String]) {
             id = cid; expires = e
         }
         guard expires > Int(Date().timeIntervalSince1970) else { throw LoginError("challenge expired; reload the login page") }
-        print("   challenge \(id) · server \(server)")
+        print("   challenge \(termSafe(id)) · server \(server)")
         // 2. one wallet unlock: the wallet fills {address} in with its identity and signs.
         //    The line stays "address:" on the wire (MineDifferent login v1); its value is
         //    the xid1… identity on current wallets.
@@ -217,16 +217,26 @@ func loginMain(_ argv: [String]) {
         // 3. submit exactly the string the wallet signed; the forum re-derives it from the pubkey.
         let (code, obj) = try http("POST", URL(string: "\(server)/api/challenge/\(id)/solve")!, json: ["address": signedAs, "pubkey": pk, "sig": sig], timeout: 30)
         guard code == 200, (obj["ok"] as? Bool) == true, let link = obj["login_url"] as? String else {
-            throw LoginError("server rejected the signature (\(code)): \(obj["error"] ?? "unknown")")
+            throw LoginError("server rejected the signature (\(code)): \(termSafe("\(obj["error"] ?? "unknown")"))")
         }
-        let role = (obj["role"] as? String) ?? "miner"
-        if let b = obj["badges"] as? [String: Any] { print("   verified ✓  role \(role)  blocks \(b["blocks"] ?? 0)  shares \(b["shares"] ?? 0)") }
+        let role = termSafe((obj["role"] as? String) ?? "miner")
+        if let b = obj["badges"] as? [String: Any] { print("   verified ✓  role \(role)  blocks \(termSafe("\(b["blocks"] ?? 0)"))  shares \(termSafe("\(b["shares"] ?? 0)"))") }
         if challenge != nil {
             print("   done — the login page in your browser signs in by itself.")
         } else {
-            print("   one-time login link:\n   \(link)")
+            // The link gets opened (here, or by MMM from the printed line): only an https page on
+            // the forum itself (plain http only for a loopback dev forum), never a file, another
+            // scheme or app, or an option to open(1).
+            let serverHost = URL(string: server)?.host?.lowercased()
+            let loopback: Set<String> = ["localhost", "127.0.0.1", "::1"]
+            guard let url = URL(string: link), let host = url.host?.lowercased(),
+                  host == "minedifferent.com" || host == serverHost,
+                  url.scheme?.lowercased() == "https" || (url.scheme?.lowercased() == "http" && loopback.contains(host)) else {
+                throw LoginError("server returned an unexpected login link: \(termSafe(String(link.prefix(200))))")
+            }
+            print("   one-time login link:\n   \(url.absoluteString)")
             if openBrowser {
-                let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/open"); p.arguments = [link]; try? p.run()
+                let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/open"); p.arguments = ["--", url.absoluteString]; try? p.run()
             }
         }
     } catch {

@@ -8,6 +8,8 @@ import LocalAuthentication
 /// (or the Mac password when Touch ID is unavailable — a closed lid, for
 /// example), with the prompt naming the exact action being approved.
 /// Forgetting it (SETUP tab) deletes the item for both features.
+/// It is bound to the wallet file it was verified against (`file`: the file's
+/// identity key, App.walletFileKey) and unlocks nothing else.
 enum ForumCredential {
     private static let query: [String: Any] = [
         kSecClass as String: kSecClassGenericPassword,
@@ -18,7 +20,15 @@ enum ForumCredential {
         var q = query; q[kSecMatchLimit as String] = kSecMatchLimitOne
         return SecItemCopyMatching(q as CFDictionary, nil) == errSecSuccess
     }
-    static func save(_ passphrase: String) throws {
+    static var file: String? {
+        get { UserDefaults.standard.string(forKey: "walletCredFile") }
+        set { UserDefaults.standard.set(newValue, forKey: "walletCredFile") }
+    }
+    static func save(_ passphrase: String, file: String) throws {
+        try save(passphrase)
+        if !passphrase.isEmpty { self.file = file }
+    }
+    private static func save(_ passphrase: String) throws {
         guard !passphrase.isEmpty else { return }
         let attributes = [kSecValueData as String: Data(passphrase.utf8)]
         let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
@@ -36,7 +46,7 @@ enum ForumCredential {
         guard status == errSecSuccess, let data = result as? Data, let pw = String(data: data, encoding: .utf8) else { throw error(status) }
         return pw
     }
-    static func forget() { SecItemDelete(query as CFDictionary) }
+    static func forget() { SecItemDelete(query as CFDictionary); file = nil }
     /// Touch ID, falling back to the Mac password — never skipped. The reason
     /// is shown in the system prompt, so callers say exactly what is approved.
     static func authenticate(reason: String = "sign in to MineDifferent with your saved wallet passphrase", _ done: @escaping (Bool, String?) -> Void) {

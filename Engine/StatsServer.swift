@@ -10,9 +10,10 @@
 //      GET /health   {"ok":true,"version":"4.1.0"}
 //      OPTIONS *     204 + CORS preflight
 //
-//  The NerdMiner MD extension is admitted by its request mark (X-NerdMiner-MD header
-//  or an extension Origin, neither of which a web page can present; see authorized()).
-//  Every other client carries `Authorization: Bearer <token>` or `?token=<token>`.
+//  The NerdMiner MD extension is admitted by its request mark (the X-NerdMiner-MD
+//  header, which a web page cannot present; see authorized()). Every other client
+//  carries `Authorization: Bearer <token>` or `?token=<token>`. Any request whose
+//  Host is not 127.0.0.1 or localhost is refused first (DNS rebinding).
 //  The token is a random 32-hex string generated on first run and kept at
 //  ~/Library/Application Support/NerdMiner/companion-token (mode 0600).
 //
@@ -21,8 +22,8 @@
 //  copies its numbers into `MinerStats.shared` once a second (lock-protected
 //  value snapshot); the server only ever reads that snapshot.
 //
-//  Dependency-free: Foundation + Darwin sockets. No SIGPIPE risk for the miner:
-//  every socket the server opens carries SO_NOSIGPIPE (no process-wide change).
+//  Dependency-free: Foundation + Darwin sockets. No SIGPIPE risk: every socket the
+//  server opens carries SO_NOSIGPIPE (the mining path also ignores SIGPIPE, main()).
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import Foundation
@@ -40,6 +41,8 @@ struct MinerStatsSnapshot {
     var address: String = ""
     var worker: String = ""
     var pool: String = ""              // "host:port"
+    var poolConnected: Bool = false    // false while the pool is down or has sent no work: hashrate reads 0
+    var poolStatus: String = ""        // "connected", "disconnected: <reason>; reconnecting in 5s", ...
     var network: String = "mainnet"    // "mainnet" | "testnet"
     var mode: String = "solo"          // "solo" | "shared"
     var gpu: String = ""
@@ -70,6 +73,8 @@ struct MinerStatsSnapshot {
         f.append(("address", jsonString(address)))
         f.append(("worker", jsonString(worker)))
         f.append(("pool", jsonString(pool)))
+        f.append(("pool_connected", poolConnected ? "true" : "false"))
+        f.append(("pool_status", jsonString(poolStatus)))
         f.append(("network", jsonString(network)))
         f.append(("mode", jsonString(mode)))
         f.append(("gpu", jsonString(gpu)))
@@ -133,6 +138,12 @@ func jsonString(_ s: String) -> String {
         }
     }
     return out + "\""
+}
+
+/// Pool and forum text with C0/C1 controls and DEL removed, safe to print on a terminal
+/// (an ESC or OSC sequence from the network could retitle it or rewrite the clipboard).
+func termSafe(_ s: String) -> String {
+    String(String.UnicodeScalarView(s.unicodeScalars.filter { $0.value >= 0x20 && !(0x7f...0x9f).contains($0.value) }))
 }
 
 func jsonNumber(_ d: Double) -> String {
@@ -344,21 +355,24 @@ final class StatsServer {
         return nil
     }
 
+    /// DNS rebinding guard: a page on attacker.example that re-resolves to 127.0.0.1 is
+    /// same-origin with this server (no preflight, custom headers allowed) but still sends
+    /// its own name as Host. Only 127.0.0.1 and localhost, on any port, get through.
+    private func loopbackHost(_ r: Request) -> Bool {
+        var h = Substring(r.headers["host"]?.lowercased() ?? "")
+        if let c = h.lastIndex(of: ":"), h[h.index(after: c)...].allSatisfy({ $0.isASCII && $0.isNumber }) { h = h[..<c] }
+        return h == "127.0.0.1" || h == "localhost"
+    }
+
     private func authorized(_ r: Request) -> Bool {
-        // The NerdMiner MD extension needs no token. A browser extension with host
-        // permission for 127.0.0.1 sends its request straight; a web page cannot: its
-        // request would carry a custom header only after a CORS preflight, and the
-        // preflight below allows Authorization and Content-Type alone, so a page can
-        // never present X-NerdMiner-MD. The Origin a browser stamps on an extension's
-        // request (chrome-extension://, moz-extension://, safari-web-extension://) is
-        // a second mark a page cannot forge. The server is read-only (GET/HEAD), and
-        // a local program that wants to read the stats could read the token file
-        // anyway, so nothing is given up. Scripts and curl keep using the token.
+        // The NerdMiner MD extension needs no token: it sends X-NerdMiner-MD, which a
+        // cross-origin page cannot (the preflight below allows only Authorization and
+        // Content-Type) and a DNS-rebound same-origin page never gets to (Host check in
+        // handle()). An extension Origin is no mark: Chrome ids are store-assigned and
+        // moz-/safari-web-extension origins are random per install, so it would admit
+        // every installed extension. The server is read-only, and a local program could
+        // read the token file anyway. Scripts and curl keep using the token.
         if r.headers["x-nerdminer-md"] != nil { return true }
-        if let origin = r.headers["origin"]?.lowercased(),
-           origin.hasPrefix("chrome-extension://") || origin.hasPrefix("moz-extension://") || origin.hasPrefix("safari-web-extension://") {
-            return true
-        }
         if let auth = r.headers["authorization"] {
             let parts = auth.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
             if parts.count == 2, parts[0].lowercased() == "bearer",
@@ -417,6 +431,10 @@ final class StatsServer {
     private func handle(_ fd: Int32) {
         defer { close(fd) }
         guard let req = readRequest(fd) else { return }
+        guard loopbackHost(req) else {
+            respond(fd, status: 421, reason: "Misdirected Request", body: "{\"error\":\"bad host\"}")
+            return
+        }
 
         if req.method == "OPTIONS" {
             respond(fd, status: 204, reason: "No Content", body: nil)
@@ -542,6 +560,8 @@ func statsDemoMain(_ argv: [String]) {
         s.dagBytes = 4_294_967_296
         s.systemMemoryBytes = systemMemoryBytes()
         s.lastEvent = "Demo mode — numbers are fake"
+        s.poolConnected = true
+        s.poolStatus = "connected"
     }
     guard let server = startCompanionServer(port: port) else { exit(1) }
     print("[demo] serving fake stats on 127.0.0.1:\(server.port); a fake block lands every 7 s. Ctrl+C to stop.")

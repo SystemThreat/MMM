@@ -545,6 +545,8 @@ struct MineResult {
     /// like a submit flood to the pool while the chain is young and the block target
     /// is easier than the share target.
     var blockNonces: Set<UInt32> = []
+    /// Why nothing was hashed (job refused, DAG unavailable), for the status line.
+    var problem: String? = nil
 }
 
 class GPUMiner {
@@ -625,15 +627,24 @@ class GPUMiner {
     /// reused; each nonce runs hashimoto over it. Returns the nonces that met the target.
     var shareDifficulty: Double = 1.0  // pool share diff (mining.set_difficulty)
     func mineDAG(header76: [UInt8], nonceStart: UInt32) -> MineResult {
-        guard header76.count >= 76, let engine = dagEngine else {
-            return MineResult(hashes: 0, shares: [], bestZeros: 0, bestNonce: 0)
-        }
+        func idle(_ why: String) -> MineResult { var r = MineResult(hashes: 0, shares: [], bestZeros: 0, bestNonce: 0); r.problem = why; return r }
+        guard let engine = dagEngine else { return idle("MetalDAG engine unavailable") }
+        guard header76.count == 76 else { return idle("Pool job does not form a 76-byte header; not mining it") }
         func le32(_ o: Int) -> UInt32 {
             UInt32(header76[o]) | (UInt32(header76[o+1]) << 8) | (UInt32(header76[o+2]) << 16) | (UInt32(header76[o+3]) << 24)
         }
         let nTime = le32(68)
         let nBits = le32(72)
-        engine.ensureDAG(nTime: nTime, params: dagParams)
+        // The pool's nTime picks the DAG epoch. One far from this Mac's clock would mean a
+        // minutes-long cache build and a huge allocation for a DAG no node accepts.
+        if dagParams.dagGrowthBytes > 0 {
+            let jobEpoch = MetalDAGSizing.epoch(nTime: nTime, dagParams)
+            let clockEpoch = MetalDAGSizing.epoch(nTime: UInt32(clamping: Int(Date().timeIntervalSince1970)), dagParams)
+            guard jobEpoch + 1 >= clockEpoch, jobEpoch <= clockEpoch + 1 else {
+                return idle("Pool job is in MetalDAG epoch \(jobEpoch) but this Mac's clock says \(clockEpoch); not mining it (check the clock)")
+            }
+        }
+        guard engine.ensureDAG(nTime: nTime, params: dagParams) > 0 else { return idle(engine.lastError ?? "MetalDAG unavailable") }
         let netTarget = MetalDAGEngine.targetWords(fromNBits: nBits)
         let shareTarget = MetalDAGEngine.targetWords(fromDifficulty: shareDifficulty)
         // mine against the EASIER (numerically larger) target so shares flow;
@@ -704,6 +715,25 @@ class StratumClient {
     var connected = false
     var nextRetryAt: Double = 0
     var retryDelay: Double = 1
+    var dropReason = "not connected"
+    var authError: String?
+    // Replies are matched to requests by id: after a reconnect subscribe/authorize get
+    // fresh ids, so "id >= 3 means a share" miscounted every re-authorize.
+    var subscribeId = -1, authorizeId = -1
+    var pendingSubmits = Set<Int>()
+    static let maxLineBytes = 1 << 20   // an xCoin notify is a few KB (the pool's coinbase has two outputs)
+
+    var hasWork: Bool { currentJob != nil && !extranonce1.isEmpty }
+    /// pool_status in /stats and the dashboard status line.
+    var poolStatus: String {
+        if socket < 0 {
+            let wait = Int((nextRetryAt - Date().timeIntervalSince1970).rounded(.up))
+            return "disconnected: \(dropReason); " + (wait > 0 ? "reconnecting in \(wait)s" : "reconnecting")
+        }
+        if hasWork { return "connected" }
+        if let e = authError { return "authorization refused: \(e)" }
+        return currentJob == nil ? "connected, waiting for work" : "connected, but the pool sent no usable extranonce"
+    }
 
     let builder: HeaderBuilder
 
@@ -717,6 +747,9 @@ class StratumClient {
         socket = Darwin.socket(AF_INET, SOCK_STREAM, 0)
         guard socket >= 0 else { return false }
         func fail() -> Bool { close(socket); socket = -1; return false }
+        // A send to a reset connection must fail with EPIPE (-> disconnect -> reconnect), not kill the process.
+        var one: Int32 = 1
+        setsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
 
         var hints = addrinfo()
         hints.ai_family = AF_INET
@@ -751,6 +784,9 @@ class StratumClient {
         currentJob = nil          // never mine a dead job
         extranonce1 = ""
         rxBytes.removeAll()
+        pendingSubmits.removeAll()
+        authError = nil
+        dropReason = reason
         nextRetryAt = Date().timeIntervalSince1970 + retryDelay
         lastEvent = "Pool connection lost (\(reason)) — reconnecting…"
         if !dashboardActive { print("[NET] \(lastEvent)") }
@@ -768,6 +804,7 @@ class StratumClient {
         } else {
             retryDelay = min(retryDelay * 2, 30)
             nextRetryAt = Date().timeIntervalSince1970 + retryDelay
+            dropReason = "pool unreachable"
             lastEvent = "Pool unreachable — retrying in \(Int(retryDelay))s"
             if !dashboardActive { print("[NET] \(lastEvent)") }
         }
@@ -780,7 +817,21 @@ class StratumClient {
             disconnect("send failed")
             return
         }
-        if !dashboardActive { print(s.contains("mining.authorize") ? "[SEND] mining.authorize [credentials redacted]" : "[SEND] \(s.trimmingCharacters(in: .newlines))") }
+        if !dashboardActive { print(s.contains("mining.authorize") ? "[SEND] mining.authorize [credentials redacted]" : "[SEND] \(termSafe(s))") }
+    }
+
+    /// Every outgoing line is real JSON: the worker name and pool job ids are arbitrary
+    /// text, and one stray quote would make the pool drop the line (a found block with it).
+    /// Returns the request id; a notification (id null) does not consume one.
+    @discardableResult
+    func request(_ method: String, _ params: [Any], notification: Bool = false) -> Int {
+        let id = msgId
+        if !notification { msgId += 1 }
+        let obj: [String: Any] = ["id": notification ? NSNull() : id, "method": method, "params": params]
+        guard JSONSerialization.isValidJSONObject(obj),
+              let data = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys, .withoutEscapingSlashes]) else { return id }
+        send(String(decoding: data, as: UTF8.self) + "\n")
+        return id
     }
 
     // "Apple M3 Pro; Mac15,6" — reported to the pool for the Discord leaderboard.
@@ -797,33 +848,31 @@ class StratumClient {
     }
 
     func subscribe() {
-        send("{\"id\":\(msgId),\"method\":\"mining.subscribe\",\"params\":[\"NerdMiner/\(nerdMinerVersion) MetalDAG (\(macHardwareInfo()))\"]}\n")
-        msgId += 1
+        subscribeId = request("mining.subscribe", ["NerdMiner/\(nerdMinerVersion) MetalDAG (\(macHardwareInfo()))"])
     }
 
     func authorize() {
-        send("{\"id\":\(msgId),\"method\":\"mining.authorize\",\"params\":[\(jsonString(config.worker)),\(jsonString(config.password))]}\n")
-        msgId += 1
+        authorizeId = request("mining.authorize", [config.worker, config.password])
     }
 
     func submitShare(jobId: String, extranonce2: String, ntime: String, nonceStr: String) {
-        send("{\"id\":\(msgId),\"method\":\"mining.submit\",\"params\":[\"\(config.worker)\",\"\(jobId)\",\"\(extranonce2)\",\"\(ntime)\",\"\(nonceStr)\"]}\n")
-        msgId += 1
+        pendingSubmits.insert(request("mining.submit", [config.worker, jobId, extranonce2, ntime, nonceStr]))
     }
 
     func publishHashrate(_ hashesPerSecond: Double) {
         // Local pool presence update for SuperKnet. This stays on the already-open
         // Stratum connection and is independent of optional NerdMiner web telemetry.
-        send("{\"id\":null,\"method\":\"mining.hashrate\",\"params\":[\(String(format: "%.0f", hashesPerSecond))]}\n")
+        let hps = hashesPerSecond.isFinite ? Int64(min(max(hashesPerSecond, 0), 1e15).rounded()) : 0
+        request("mining.hashrate", [hps], notification: true)
     }
 
     func receive() {
-        // Stratum is newline-delimited JSON, and one message can be far larger
-        // than a single recv(): a mining.notify carrying a large coinbase (for
-        // example an inscription) is over 1 MB of hex on one line. Accumulate
-        // bytes across reads and only hand complete lines to processMessage.
-        // The previous version treated each <=8191-byte read as whole lines,
-        // which silently dropped any job larger than one read.
+        // Stratum is newline-delimited JSON, and one message can span several
+        // recv() calls. Accumulate bytes across reads and only hand complete lines
+        // to processMessage (treating each read as whole lines dropped big jobs).
+        // Only the new bytes are scanned, and a partial line over maxLineBytes
+        // drops the connection: a pool that never sends a newline must not grow
+        // memory without bound.
         if socket < 0 { attemptReconnect(); return }
         var buf = [UInt8](repeating: 0, count: 65536)
         let n = recv(socket, &buf, buf.count, 0)
@@ -836,18 +885,21 @@ class StratumClient {
             return
         }
         if n > 0 {
+            var scan = rxBytes.count, lineStart = 0
             rxBytes.append(contentsOf: buf[0..<n])
-            while let nl = rxBytes.firstIndex(of: 0x0A) {
-                let lineBytes = rxBytes[rxBytes.startIndex..<nl]
-                let line = String(decoding: lineBytes, as: UTF8.self)
-                rxBytes.removeSubrange(rxBytes.startIndex...nl)
+            while let nl = rxBytes[scan...].firstIndex(of: 0x0A) {
+                let line = String(decoding: rxBytes[lineStart..<nl], as: UTF8.self)
+                lineStart = nl + 1; scan = lineStart
                 if !line.isEmpty { processMessage(line) }
+                if socket < 0 { return }   // disconnected meanwhile; rxBytes was cleared
             }
+            if lineStart > 0 { rxBytes.removeFirst(lineStart) }
+            if rxBytes.count > StratumClient.maxLineBytes { disconnect("pool sent a line over 1 MiB") }
         }
     }
 
     func processMessage(_ msg: String) {
-        if !dashboardActive { print("[RECV] \(msg)") }
+        if !dashboardActive { print("[RECV] \(termSafe(msg))") }
         guard let data = msg.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
 
@@ -864,7 +916,7 @@ class StratumClient {
             case "mining.block_found":
                 blocksFound += 1
                 lastBlockHeight = params.count > 1 ? (params[1] as? Int) : nil
-                let shortHash = (params.first as? String).map { String($0.prefix(12)) } ?? "confirmed"
+                let shortHash = (params.first as? String).map { termSafe(String($0.prefix(12))) } ?? "confirmed"
                 if let height = lastBlockHeight {
                     lastEvent = "BLOCK \(height) confirmed / \(shortHash)..."
                 } else {
@@ -876,28 +928,41 @@ class StratumClient {
         }
 
         if let id = json["id"] as? Int {
-            if let result = json["result"] as? [Any], result.count >= 3 {
-                if let en1 = result[1] as? String, let en2sz = result[2] as? Int {
+            if id == subscribeId, let result = json["result"] as? [Any], result.count >= 3 {
+                // en2 size is bounded before nextExtranonce2 multiplies it; en1 goes into the coinbase hex.
+                if let en1 = result[1] as? String, let en2sz = result[2] as? Int, (0...32).contains(en2sz),
+                   en1.count <= 64, en1.count % 2 == 0, en1.allSatisfy(\.isHexDigit) {
                     extranonce1 = en1
                     extranonce2SizeBytes = en2sz
                     if !dashboardActive { print("[STATE] extranonce1=\(extranonce1) extranonce2SizeBytes=\(extranonce2SizeBytes)") }
+                } else {
+                    lastEvent = "Pool sent an invalid extranonce; ignored"
+                    if !dashboardActive { print("[STATE] \(lastEvent)") }
                 }
             }
-            if let result = json["result"] as? Bool {
-                if result {
-                    if id >= 3 {
+            // A reply with result null and an error array is a refusal too (the pool's "bad params").
+            if let result = json["result"] as? Bool ?? (json["error"] is [Any] ? false : nil) {
+                // Stratum errors are [code, message, data]; "reject-reason" is the older extension.
+                let reason = termSafe((json["error"] as? [Any]).flatMap { $0.count > 1 ? $0[1] as? String : nil }
+                                      ?? (json["reject-reason"] as? String) ?? "unknown")
+                if id == authorizeId {
+                    authorized = result
+                    authError = result ? nil : reason
+                    if result { print("[STATE] Authorized!") }
+                    else {
+                        lastEvent = "Pool refused authorization: \(reason)"
+                        if !dashboardActive { print("[STATE] \(lastEvent)") }
+                    }
+                } else if pendingSubmits.remove(id) != nil {
+                    if result {
                         acceptedShares += 1
                         lastEvent = "Share accepted by pool"
                         if !dashboardActive { print("[SHARE] ACCEPTED!") }
                     } else {
-                        authorized = true
-                        print("[STATE] Authorized!")
+                        rejectedShares += 1
+                        lastEvent = "Share rejected: \(reason)"
+                        if !dashboardActive { print("[SHARE] REJECT: \(reason)") }
                     }
-                } else {
-                    let reason = (json["reject-reason"] as? String) ?? "unknown"
-                    rejectedShares += 1
-                    lastEvent = "Share rejected: \(reason)"
-                    if !dashboardActive { print("[SHARE] REJECT: \(reason)") }
                 }
             }
         }
@@ -905,6 +970,14 @@ class StratumClient {
 
     func parseNotify(_ params: [Any]) {
         guard params.count >= 9 else { return }
+        // The fixed-width fields must be exact: a short or long prevhash shifts nTime/nBits in the header.
+        func hex(_ v: Any, _ len: Int) -> Bool { (v as? String).map { $0.count == len && $0.allSatisfy(\.isHexDigit) } ?? false }
+        guard hex(params[1], 64), hex(params[5], 8), hex(params[6], 8), hex(params[7], 8) else {
+            currentJob = nil
+            lastEvent = "Pool sent a malformed job; ignored"
+            if !dashboardActive { print("[JOB] \(lastEvent)") }
+            return
+        }
 
         currentJob = StratumJob(
             jobId: params[0] as? String ?? "",
@@ -922,12 +995,14 @@ class StratumClient {
             extranonce2Counter = 0
         }
 
-        lastEvent = "New mining job \(currentJob!.jobId)"
-        if !dashboardActive { print("[JOB] id=\(currentJob!.jobId) branches=\(currentJob!.merkleBranchesHex.count)") }
+        let shownId = termSafe(currentJob!.jobId)
+        lastEvent = "New mining job \(shownId)"
+        if !dashboardActive { print("[JOB] id=\(shownId) branches=\(currentJob!.merkleBranchesHex.count)") }
     }
 
     func nextExtranonce2() -> String {
-        let width = extranonce2SizeBytes * 2
+        let width = min(max(extranonce2SizeBytes, 0), 32) * 2
+        guard width > 0 else { return "" }
         let s = String(format: "%0\(width)llx", extranonce2Counter)
         extranonce2Counter &+= 1
         return s
@@ -1072,6 +1147,20 @@ func isValidXcoinAddress(_ addr: String) -> Bool {
     return bech32Polymod(bech32HrpExpand(hrp) + values) == 0x2bc830a3   // bech32m constant
 }
 
+/// Startup failure: the last line out is `error: <reason>` on stderr, then exit 1
+/// (MMM shows exit codes other than 0 and 15 as an engine failure).
+func exitWithError(_ reason: String) -> Never {
+    fflush(stdout)
+    fputs("error: \(termSafe(reason))\n", stderr)
+    exit(1)
+}
+
+/// SIGPIPE is ignored while mining, so a closed stdout (MMM force-quit, `| head`) shows
+/// up here as EPIPE: stop instead of mining on as an orphan.
+func flushStdout() {
+    if fflush(stdout) != 0, errno == EPIPE { exit(1) }
+}
+
 func main() {
     var cfg = MinerConfig()
     // xCoin MetalDAG defaults: solo mining against a local pool.
@@ -1084,6 +1173,9 @@ func main() {
     if args.count > 1, args[1] == "login" { loginMain(Array(args.dropFirst(2))); return }
     if args.count > 1, args[1] == "__statsdemo" { statsDemoMain(Array(args.dropFirst(2))); return }   // hidden: test the companion server without the GPU
     if args.count > 1, ["version","--version","-v"].contains(args[1]) { print("NerdMiner \(nerdMinerVersion) (MetalDAG engine 3.2, login v1)"); return }
+    // A pool that resets the connection must reach disconnect() -> reconnect, never kill the
+    // miner. The stratum socket also carries SO_NOSIGPIPE; stdout EPIPE is handled by flushStdout().
+    signal(SIGPIPE, SIG_IGN)
     var minerAddress = ""
     var workerName = "cli"
     var mode = "solo"                   // --mode solo|shared (shared = 0%-fee PPLNS split payouts)
@@ -1108,7 +1200,7 @@ func main() {
             baseOverride = UInt64(args[ai + 1]); ai += 2
         } else if a == "--stats-port", ai + 1 < args.count {
             if let p = UInt16(args[ai + 1]), p > 0 { statsPort = p }
-            else { print("[-] --stats-port needs a number 1-65535 (got '\(args[ai + 1])')"); return }
+            else { exitWithError("--stats-port needs a number 1-65535 (got '\(args[ai + 1])')") }
             ai += 2
         } else if a == "--no-stats" {
             statsEnabled = false; ai += 1
@@ -1143,7 +1235,7 @@ func main() {
         print("    Testnet A addresses start with txa1r..., mainnet with xpa1r... (witness v3, bech32m).")
         print("    A ...1z... address is witness v2, which this chain does not pay.")
         print("    Double-check it with `xcoin-wallet address`, then run again.")
-        return
+        exitWithError("'\(minerAddress)' is not a valid xCoin payout address")
     }
     // Shared mode opts into PPLNS: the pool routes on a "-shared" worker suffix.
     if mode == "shared" && !workerName.lowercased().hasSuffix("-shared") {
@@ -1170,10 +1262,8 @@ func main() {
 
     // Initialize GPU
     print("[+] Initializing Metal GPU...")
-    guard let gpu = GPUMiner() else {
-        print("[-] Failed to initialize GPU!")
-        return
-    }
+    guard let gpu = GPUMiner() else { exitWithError("cannot initialize the Metal GPU") }
+    guard gpu.dagEngine != nil else { exitWithError("the MetalDAG engine failed to initialize on \(gpu.gpuName)") }
     // DAG sizing is consensus-critical. A txa1r... payout address selects testnet A;
     // an xpa1r... address selects mainnet. Both use the 4 GiB launch DAG; they differ
     // in the genesis time the epochs count from.
@@ -1188,13 +1278,18 @@ func main() {
         print("[+] Network: mainnet (4 GiB MetalDAG)")
     }
     if let b = baseOverride {
+        // The base picks every DAG epoch, and a growing DAG's size: an old base means a
+        // DAG no node uses and far too big to build (1970 -> epoch ~1500, ~190 GiB).
+        guard gpu.dagParams.dagGrowthBytes == 0 || (1767225600...UInt64(Date().timeIntervalSince1970) + 86400).contains(b) else {
+            exitWithError("--base \(b) is not a plausible genesis time (2026-01-01 up to now)")
+        }
         gpu.dagParams.baseTime = b
         print("[+] MetalDAG base overridden -> \(b) (epoch alignment to node)")
     }
     if gpu.dagParams.baseTime == MetalDAGParams.mainnetBaseTimePending {
         print("[-] The mainnet genesis is not mined yet, so its MetalDAG base time is unknown here.")
         print("    Pass --base <genesis unix time> from the node's getblock of block 0, or mine testnet A with a txa1r... address.")
-        return
+        exitWithError("mainnet MetalDAG base time unknown: pass --base <genesis unix time>")
     }
     print("[+] GPU: \(gpu.gpuName)")
 
@@ -1202,10 +1297,7 @@ func main() {
     print("[+] Connecting to \(cfg.host):\(cfg.port)...")
     let stratum = StratumClient(config: cfg)
 
-    guard stratum.connect() else {
-        print("[-] Failed to connect to pool!")
-        return
-    }
+    guard stratum.connect() else { exitWithError("cannot connect to pool \(cfg.host):\(cfg.port)") }
     print("[+] Connected!")
 
     // Subscribe and authorize
@@ -1217,11 +1309,10 @@ func main() {
     Thread.sleep(forTimeInterval: 0.5)
     stratum.receive()
 
-    // Wait for job. A large-coinbase job (e.g. an inscription) is >1 MB and
-    // arrives across many recv() calls, so poll receive() tightly for up to
-    // 30 s and only stop once a complete job has been parsed. The old loop
-    // (20 tries x 0.25 s = 5 s, with a fixed sleep between reads) gave up
-    // before a big job finished streaming in.
+    // Wait for job. A job can arrive across several recv() calls, so poll
+    // receive() tightly for up to 30 s and only stop once a complete job has
+    // been parsed. The old loop (20 tries x 0.25 s = 5 s, with a fixed sleep
+    // between reads) gave up before a big job finished streaming in.
     print("[+] Waiting for job...")
     let jobDeadline = Date().addingTimeInterval(30)
     while stratum.currentJob == nil && Date() < jobDeadline {
@@ -1230,8 +1321,8 @@ func main() {
     }
 
     guard stratum.currentJob != nil else {
-        print("[-] No job received!")
-        return
+        let detail = stratum.socket < 0 || stratum.authError != nil ? stratum.poolStatus : stratum.lastEvent.hasPrefix("Pool sent") ? stratum.lastEvent : ""
+        exitWithError("no mining job from \(cfg.host):\(cfg.port) within 30 s" + (detail.isEmpty ? "" : " (\(detail))"))
     }
 
     // Setup signal handler
@@ -1254,6 +1345,7 @@ func main() {
     var lastHashUpdate = Date()
     var lastHashratePublish = Date.distantPast
     var hashrate: Double = 0
+    var lastProblem: String?
 
     // Calculate required zeros from difficulty
     print("[+] Mining at pool share difficulty \(stratum.difficulty)")
@@ -1287,6 +1379,8 @@ func main() {
         s.difficulty = stratum.difficulty
         s.systemMemoryBytes = systemMemoryBytes()
         s.lastEvent = stratum.lastEvent
+        s.poolConnected = stratum.hasWork
+        s.poolStatus = stratum.poolStatus
     }
     var companionLine = "\(ansiDim)Companion: off (--no-stats)\(ansiReset)"
     if statsEnabled, let server = startCompanionServer(port: statsPort) {
@@ -1298,13 +1392,90 @@ func main() {
     stratum.dashboardActive = true
     enterDashboard()
 
-    // Main mining loop
-    while true {
+    // Stats snapshot and dashboard frame, once a second from both branches of the loop:
+    // while the pool is down or has sent no work the hashrate reads 0 and the status says why.
+    func publish(_ now: Date) {
+        lastDisplay = now
+        let working = stratum.hasWork, poolStatus = stratum.poolStatus
+        let uptime = formatUptime(now.timeIntervalSince(startTime))
+        let currentTime = clockFormatter.string(from: now)
+        let diff = String(format: "%.9g", stratum.difficulty)
+        let network = minerAddress.lowercased().hasPrefix("txa1") ? "xCoin testnet A / 4 GiB DAG" : "xCoin mainnet / 4 GiB DAG"
+        let nTime = stratum.currentJob.flatMap { UInt32($0.ntimeHex, radix: 16) } ?? UInt32(Date().timeIntervalSince1970)
+        let dagSizing = MetalDAGSizing.sizing(nTime: nTime, gpu.dagParams)
+        let dagTrafficGBs = hashrate * 8192.0 / 1_000_000_000.0
+        let bandwidth = String(format: "%.1f GB/s est.", dagTrafficGBs)
+        let blockHeight = stratum.lastBlockHeight.map(String.init) ?? "--"
+        let rule = "\(ansiCyan)──────────────────────────────────────────────────────\(ansiReset)"
+        let statusLine = !working ? "\(ansiYellow)○ \(termSafe(poolStatus))\(ansiReset)"
+            : hashrate > 0 ? "\(ansiGreen)● MINING\(ansiReset)"
+            : "\(ansiYellow)○ Starting…\(ansiReset)"
+        // Publish the same numbers to the companion stats server (value copy under a lock).
+        MinerStats.shared.update { s in
+            s.poolConnected = working
+            s.poolStatus = poolStatus
+            s.hashrateHps = hashrate
+            s.totalHashes = totalHashes
+            s.uptimeS = Int(now.timeIntervalSince(startTime))
+            s.sharesFound = sharesFound
+            s.accepted = stratum.acceptedShares
+            s.rejected = stratum.rejectedShares
+            s.blocksFound = stratum.blocksFound
+            s.lastBlockHeight = stratum.lastBlockHeight
+            s.difficulty = stratum.difficulty
+            s.bestShareBits = bestZeros
+            s.dagEpoch = dagSizing.epoch
+            s.dagEpochNextS = {
+                let base = gpu.dagParams.baseTime, len = gpu.dagParams.epochSeconds
+                let t = UInt64(nTime)
+                return t > base ? Int(len - ((t - base) % len)) : Int(base - t)
+            }()
+            s.dagBytes = dagSizing.fullBytes
+            s.dagTrafficGBs = dagTrafficGBs
+            s.lastEvent = stratum.lastEvent
+        }
+        let screen = dashboardScreen([
+            "",
+            "  \(ansiBold)\(ansiCyan)⛏  NerdMiner v\(nerdMinerVersion)\(ansiReset)   \(ansiDim)MetalDAG\(ansiReset)",
+            "  \(ansiDim)Native MetalDAG GPU Mining for macOS\(ansiReset)",
+            rule,
+            "  GPU:       \(ansiGreen)\(gpu.gpuName)\(ansiReset)",
+            "  Chip:      \(ansiGreen)Apple Silicon / \(machineArchitecture())\(ansiReset)",
+            "  Network:   \(ansiYellow)\(network)\(ansiReset)",
+            "  Pool:      \(ansiYellow)\(cfg.host):\(cfg.port)\(ansiReset)   Worker: \(workerName)",
+            "  Status:    \(statusLine)",
+            rule,
+            "  Hashrate:     \(ansiBold)\(ansiWhite)\(formatHashrate(hashrate))\(ansiReset)    \(ansiDim)DAG traffic \(bandwidth)\(ansiReset)",
+            "  Total Hashes: \(totalHashes)",
+            "  Uptime:       \(uptime)    \(ansiDim)\(currentTime)\(ansiReset)",
+            "  DAG:          \(formatBytes(dagSizing.fullBytes)) (epoch \(dagSizing.epoch))  •  \(formatBytes(systemMemoryBytes())) system",
+            rule,
+            "  Difficulty:   \(diff)",
+            "  Found:        \(sharesFound)",
+            "  Accepted:     \(ansiGreen)\(stratum.acceptedShares)\(ansiReset)    Rejected: \(stratum.rejectedShares > 0 ? ansiRed : ansiDim)\(stratum.rejectedShares)\(ansiReset)",
+            "  Blocks:       \(ansiYellow)\(stratum.blocksFound)\(ansiReset)    Last height: \(ansiYellow)\(blockHeight)\(ansiReset)",
+            "  Best Share:   \(bestZeros) bits",
+            rule,
+            "  \(ansiDim)Status: \(termSafe(stratum.lastEvent))\(ansiReset)",
+            "  \(companionLine)",
+            "  \(ansiDim)📊 macmetalminer.com/leaderboard.html  •  Telemetry \(telemetryEnabled ? "ON" : "OFF")  •  Ctrl+C to stop\(ansiReset)",
+            ""
+        ])
+        print(screen, terminator: "")
+        flushStdout()
+    }
+
+    // Main mining loop. A command-line process has no run loop, so nothing drains the
+    // autoreleased Metal command buffers and parsed JSON unless each pass does it here.
+    while true { autoreleasepool {
         stratum.receive()
 
         guard let job = stratum.currentJob, !stratum.extranonce1.isEmpty else {
+            let now = Date()
+            hashrate = 0; hashesThisSecond = 0; lastHashUpdate = now   // don't average the outage into the next rate
+            if now.timeIntervalSince(lastDisplay) >= 1.0 { publish(now) }
             Thread.sleep(forTimeInterval: 0.1)
-            continue
+            return
         }
 
         let en2 = stratum.nextExtranonce2()
@@ -1312,6 +1483,13 @@ func main() {
 
         gpu.shareDifficulty = stratum.difficulty
         let result = gpu.mineDAG(header76: header76, nonceStart: nonce)
+        if let problem = result.problem {
+            stratum.lastEvent = problem; lastProblem = problem
+            Thread.sleep(forTimeInterval: 0.1)   // nothing was hashed: don't spin on the non-blocking receive
+        } else if let p = lastProblem {
+            if stratum.lastEvent == p { stratum.lastEvent = "Mining resumed" }
+            lastProblem = nil
+        }
 
         hashesThisSecond += result.hashes
         totalHashes += result.hashes
@@ -1363,79 +1541,13 @@ func main() {
                 Thread.sleep(forTimeInterval: 0.02)
             }
             nonce &+= UInt32(gpu.dagBatchSize)
-            continue
+            return
         }
 
         nonce &+= UInt32(gpu.dagBatchSize)
 
-        if now.timeIntervalSince(lastDisplay) >= 1.0 {
-            let uptime = formatUptime(now.timeIntervalSince(startTime))
-            let currentTime = clockFormatter.string(from: now)
-            let diff = String(format: "%.9g", stratum.difficulty)
-            let network = minerAddress.lowercased().hasPrefix("txa1") ? "xCoin testnet A / 4 GiB DAG" : "xCoin mainnet / 4 GiB DAG"
-            let nTime = stratum.currentJob.flatMap { UInt32($0.ntimeHex, radix: 16) } ?? UInt32(Date().timeIntervalSince1970)
-            let dagSizing = MetalDAGSizing.sizing(nTime: nTime, gpu.dagParams)
-            let dagTrafficGBs = hashrate * 8192.0 / 1_000_000_000.0
-            let bandwidth = String(format: "%.1f GB/s est.", dagTrafficGBs)
-            let blockHeight = stratum.lastBlockHeight.map(String.init) ?? "--"
-            let rule = "\(ansiCyan)──────────────────────────────────────────────────────\(ansiReset)"
-            let statusLine = hashrate > 0
-                ? "\(ansiGreen)● MINING\(ansiReset)"
-                : "\(ansiYellow)○ Starting…\(ansiReset)"
-            // Publish the same numbers to the companion stats server (value copy under a lock).
-            MinerStats.shared.update { s in
-                s.hashrateHps = hashrate
-                s.totalHashes = totalHashes
-                s.uptimeS = Int(now.timeIntervalSince(startTime))
-                s.sharesFound = sharesFound
-                s.accepted = stratum.acceptedShares
-                s.rejected = stratum.rejectedShares
-                s.blocksFound = stratum.blocksFound
-                s.lastBlockHeight = stratum.lastBlockHeight
-                s.difficulty = stratum.difficulty
-                s.bestShareBits = bestZeros
-                s.dagEpoch = dagSizing.epoch
-                s.dagEpochNextS = {
-                    let base = gpu.dagParams.baseTime, len = gpu.dagParams.epochSeconds
-                    let t = UInt64(nTime)
-                    return t > base ? Int(len - ((t - base) % len)) : Int(base - t)
-                }()
-                s.dagBytes = dagSizing.fullBytes
-                s.dagTrafficGBs = dagTrafficGBs
-                s.lastEvent = stratum.lastEvent
-            }
-            let screen = dashboardScreen([
-                "",
-                "  \(ansiBold)\(ansiCyan)⛏  NerdMiner v\(nerdMinerVersion)\(ansiReset)   \(ansiDim)MetalDAG\(ansiReset)",
-                "  \(ansiDim)Native MetalDAG GPU Mining for macOS\(ansiReset)",
-                rule,
-                "  GPU:       \(ansiGreen)\(gpu.gpuName)\(ansiReset)",
-                "  Chip:      \(ansiGreen)Apple Silicon / \(machineArchitecture())\(ansiReset)",
-                "  Network:   \(ansiYellow)\(network)\(ansiReset)",
-                "  Pool:      \(ansiYellow)\(cfg.host):\(cfg.port)\(ansiReset)   Worker: \(workerName)",
-                "  Status:    \(statusLine)",
-                rule,
-                "  Hashrate:     \(ansiBold)\(ansiWhite)\(formatHashrate(hashrate))\(ansiReset)    \(ansiDim)DAG traffic \(bandwidth)\(ansiReset)",
-                "  Total Hashes: \(totalHashes)",
-                "  Uptime:       \(uptime)    \(ansiDim)\(currentTime)\(ansiReset)",
-                "  DAG:          \(formatBytes(dagSizing.fullBytes)) (epoch \(dagSizing.epoch))  •  \(formatBytes(systemMemoryBytes())) system",
-                rule,
-                "  Difficulty:   \(diff)",
-                "  Found:        \(sharesFound)",
-                "  Accepted:     \(ansiGreen)\(stratum.acceptedShares)\(ansiReset)    Rejected: \(stratum.rejectedShares > 0 ? ansiRed : ansiDim)\(stratum.rejectedShares)\(ansiReset)",
-                "  Blocks:       \(ansiYellow)\(stratum.blocksFound)\(ansiReset)    Last height: \(ansiYellow)\(blockHeight)\(ansiReset)",
-                "  Best Share:   \(bestZeros) bits",
-                rule,
-                "  \(ansiDim)Status: \(stratum.lastEvent)\(ansiReset)",
-                "  \(companionLine)",
-                "  \(ansiDim)📊 macmetalminer.com/leaderboard.html  •  Telemetry \(telemetryEnabled ? "ON" : "OFF")  •  Ctrl+C to stop\(ansiReset)",
-                ""
-            ])
-            print(screen, terminator: "")
-            fflush(stdout)
-            lastDisplay = now
-        }
-    }
+        if now.timeIntervalSince(lastDisplay) >= 1.0 { publish(now) }
+    } }
 }
 
 main()

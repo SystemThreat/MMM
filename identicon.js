@@ -67,14 +67,19 @@ async function hmacSha256(key, data) {
 // it fills the first empty cell in scan order, trying the RNG-shuffled anchored
 // orientations, pruning any hole whose area is not a multiple of 4. The
 // same-name-orthogonal-adjacency rule is a preference: three budgeted attempts
-// enforce it, and only if all three exhaust does a final unbounded pass relax
-// it (the documented last resort). The 4-cell rule is never relaxed.
+// enforce it, and only if all three exhaust does a final pass relax it (the
+// documented last resort; unbounded in the other copies, capped here). The
+// 4-cell rule is never relaxed.
 const ANCHORED = ALL.map(({ name, coords }) => {
   let [ax, ay] = coords[0];
   for (const [x, y] of coords) if (y < ay || (y === ay && x < ax)) { ax = x; ay = y; }
   return { name, coords, ax, ay };
 });
 const TILE_ATTEMPTS = 3, TILE_BUDGET = 2500;
+// MMM only: the relaxed pass runs on the UI thread for untrusted addresses, so it
+// stops at RELAXED_CAP steps. Every board it finishes is bit-identical to the
+// explorer and forum copies; one it cannot finish draws blank, never a different mark.
+const RELAXED_CAP = 50000;
 
 function solvePieces(N, rng, enforceAdj, budget) {
   const board = Array.from({ length: N }, () => Array(N).fill(null));
@@ -151,12 +156,12 @@ function tilePieces(N, rng) {
     const p = solvePieces(N, rng, true, TILE_BUDGET);
     if (p) return p;
   }
-  return solvePieces(N, rng, false, Infinity);
+  return solvePieces(N, rng, false, RELAXED_CAP);
 }
 
 function tile(N, rng) {
   const board = Array.from({ length: N }, () => Array(N).fill(null));
-  for (const { name, cells } of tilePieces(N, rng)) for (const [rr, cc] of cells) board[rr][cc] = name;
+  for (const { name, cells } of tilePieces(N, rng) || []) for (const [rr, cc] of cells) board[rr][cc] = name;
   return board;
 }
 

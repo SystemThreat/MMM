@@ -35,7 +35,7 @@ subprocess.run(['node','--check',str(root/'app.js')],check=True)
 engine=(root/'Engine/main.swift').read_text()
 assert 'cfg.password = readLine()' in engine
 assert '[credentials redacted]' in engine
-assert 'jsonString(config.password)' in engine
+assert 'request("mining.authorize", [config.worker, config.password])' in engine   # JSON-encoded by JSONSerialization, never interpolated
 assert 'submittedPassword = b["password"]' in source
 assert 'register(defaults:["autoStartMining":true])' in source
 assert 'UserDefaults.standard.set(enabled,forKey:"autoStartMining")' in source

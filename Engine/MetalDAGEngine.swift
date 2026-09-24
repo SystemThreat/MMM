@@ -110,9 +110,11 @@ enum MetalDAGSizing {
         while items > 2 && !isPrime(items) { items -= 1 }
         return items * unit
     }
+    static func epoch(nTime: UInt32, _ p: MetalDAGParams) -> UInt64 {
+        (UInt64(nTime) > p.baseTime ? UInt64(nTime) - p.baseTime : 0) / p.epochSeconds
+    }
     static func sizing(nTime: UInt32, _ p: MetalDAGParams) -> EpochSizing {
-        let rel = UInt64(nTime) > p.baseTime ? UInt64(nTime) - p.baseTime : 0
-        let epoch = rel / p.epochSeconds
+        let epoch = self.epoch(nTime: nTime, p)
         var rawFull = p.dagInitBytes + p.dagGrowthBytes * epoch
         var rawCache = rawFull / p.cacheDivisor
         if rawFull  < 128*2 { rawFull  = 128*2 }
@@ -176,6 +178,8 @@ final class MetalDAGEngine {
     private var dagBuf: MTLBuffer?
     private var dagItems: UInt32 = 0
     private(set) var currentEpoch: UInt64 = .max
+    private(set) var lastError: String?          // why the last ensureDAG returned 0
+    private var failedEpoch: UInt64 = .max, retryAt = Date.distantPast
 
     init?(device: MTLDevice, library: MTLLibrary) {
         guard let bf = library.makeFunction(name: "build_dag"),
@@ -197,24 +201,35 @@ final class MetalDAGEngine {
     static let buildChunkItems = 1 << 19   // 512K items (~32 MiB) per dispatch
 
     /// Build (or rebuild) the DAG for the epoch implied by `nTime`. Returns DAG size in
-    /// bytes. Skips rebuild if the epoch is unchanged. `progress` is called with 0…1 as
-    /// the DAG is generated (a full 4 GiB DAG takes a while — like Ethereum's DAG gen).
+    /// bytes, or 0 with `lastError` set when it cannot be built (then no DAG is current
+    /// for that epoch and mine() must not run). Skips rebuild if the epoch is unchanged.
+    /// `progress` is called with 0…1 as the DAG is generated (a 4 GiB DAG takes a while).
     @discardableResult
     func ensureDAG(nTime: UInt32, params: MetalDAGParams, progress: ((Double) -> Void)? = nil) -> UInt64 {
         let sz = MetalDAGSizing.sizing(nTime: nTime, params)
         if sz.epoch == currentEpoch, dagBuf != nil { return sz.fullBytes }
+        if sz.epoch == failedEpoch, Date() < retryAt { return 0 }   // the CPU cache alone takes seconds: don't redo it every batch
+        func failed(_ why: String) -> UInt64 { lastError = why; failedEpoch = sz.epoch; retryAt = Date().addingTimeInterval(30); return 0 }
+        guard sz.fullBytes <= UInt64(device.maxBufferLength), sz.fullBytes / 64 <= UInt64(UInt32.max) else {
+            return failed("MetalDAG epoch \(sz.epoch) needs \(sz.fullBytes >> 20) MiB, over this GPU's \(device.maxBufferLength >> 20) MiB buffer limit")
+        }
+        // Free the previous epoch's DAG before allocating the next: holding both doubles
+        // peak memory at rollover (8+ GiB). mine() has waited for its command buffers.
+        dagBuf = nil; dagItems = 0; currentEpoch = .max
         let seed = MetalDAGSizing.seed(epoch: sz.epoch)
         progress?(0.0)
         let cache = MetalDAGCache.make(cacheBytes: sz.cacheBytes, seed: seed)
-        let cacheBuf = device.makeBuffer(bytes: cache, length: cache.count, options: .storageModeShared)!
         let items = Int(sz.fullBytes / 64)
-        let dag = device.makeBuffer(length: items * 64, options: .storageModeShared)!
+        guard let cacheBuf = device.makeBuffer(bytes: cache, length: cache.count, options: .storageModeShared),
+              let dag = device.makeBuffer(length: items * 64, options: .storageModeShared) else {
+            return failed("cannot allocate the \(sz.fullBytes >> 20) MiB MetalDAG for epoch \(sz.epoch)")
+        }
         var cacheN = UInt32(cache.count / 64)
         let tg = min(buildPipe.maxTotalThreadsPerThreadgroup, 256)
         var start = 0
         while start < items {
             let count = min(MetalDAGEngine.buildChunkItems, items - start)
-            let cb = queue.makeCommandBuffer()!; let e = cb.makeComputeCommandEncoder()!
+            guard let cb = queue.makeCommandBuffer(), let e = cb.makeComputeCommandEncoder() else { return failed("cannot encode the MetalDAG build") }
             e.setComputePipelineState(buildPipe)
             e.setBuffer(cacheBuf, offset: 0, index: 0)
             e.setBytes(&cacheN, length: 4, index: 1)
@@ -223,10 +238,13 @@ final class MetalDAGEngine {
             e.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
             e.endEncoding(); cb.commit(); cb.waitUntilCompleted()
+            // One failed chunk would leave a zero-filled slice and ~40% wrong hashes for the whole epoch.
+            guard cb.status == .completed else { return failed("MetalDAG build failed at item \(start): \(cb.error?.localizedDescription ?? "GPU error")") }
             start += count
             progress?(Double(start) / Double(items))
         }
         self.dagBuf = dag; self.dagItems = UInt32(items); self.currentEpoch = sz.epoch
+        lastError = nil; failedEpoch = .max
         return sz.fullBytes
     }
 
@@ -241,13 +259,13 @@ final class MetalDAGEngine {
         var di = dagItems
         var ns = nonceStart
         var tgt = targetMSWFirst
-        let hhBuf = device.makeBuffer(bytes: &hhWords, length: 32, options: .storageModeShared)!
-        let tgtBuf = device.makeBuffer(bytes: &tgt, length: 32, options: .storageModeShared)!
-        let hashCount = device.makeBuffer(length: 4, options: .storageModeShared)!
-        let resCount  = device.makeBuffer(length: 4, options: .storageModeShared)!
-        let results   = device.makeBuffer(length: 100 * MemoryLayout<UInt32>.stride * 10, options: .storageModeShared)!
+        guard let hhBuf = device.makeBuffer(bytes: &hhWords, length: 32, options: .storageModeShared),
+              let tgtBuf = device.makeBuffer(bytes: &tgt, length: 32, options: .storageModeShared),
+              let hashCount = device.makeBuffer(length: 4, options: .storageModeShared),
+              let resCount  = device.makeBuffer(length: 4, options: .storageModeShared),
+              let results   = device.makeBuffer(length: 100 * MemoryLayout<UInt32>.stride * 10, options: .storageModeShared),
+              let cb = queue.makeCommandBuffer(), let e = cb.makeComputeCommandEncoder() else { return ([], 0) }
         memset(hashCount.contents(), 0, 4); memset(resCount.contents(), 0, 4)
-        let cb = queue.makeCommandBuffer()!; let e = cb.makeComputeCommandEncoder()!
         e.setComputePipelineState(minePipe)
         e.setBuffer(dag, offset: 0, index: 0)
         e.setBytes(&di, length: 4, index: 1)
@@ -261,6 +279,7 @@ final class MetalDAGEngine {
         e.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
                           threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
         e.endEncoding(); cb.commit(); cb.waitUntilCompleted()
+        guard cb.status == .completed else { return ([], 0) }   // a failed batch's buffers hold no results
         let nFound = Int(resCount.contents().bindMemory(to: UInt32.self, capacity: 1).pointee)
         let hashes = hashCount.contents().bindMemory(to: UInt32.self, capacity: 1).pointee
         // MiningResult layout: {uint nonce; uint hash[8]; uint zeros;} = 10 words.
