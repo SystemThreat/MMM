@@ -114,7 +114,7 @@ async function renderWallet(){
   const row=el('div','','wallet-row');const b=(wallet.balances||{})[addr];
   row.append(el('label',label));row.append(await person(addr));
   row.append(el('strong',b?xcfFmt(b.spendable_sats)+' XCF':'—'));
-  const note=b?(b.immature_sats>0?'+ '+xcfFmt(b.immature_sats)+' maturing':'spendable'):'explorer unavailable';
+  const note=b?((b.immature_sats>0?'+ '+xcfFmt(b.immature_sats)+' maturing':'spendable')+(b.carried_sats>0?' \u00b7 incl. '+xcfFmt(b.carried_sats)+' single-leaf':'')):'explorer unavailable';
   const small=el('small',note);
   if(removable){const x=el('button',' ✕','text-button');x.type='button';x.title='stop watching';x.onclick=()=>send('walletWatchRemove',{address:addr});small.append(x)}
   row.append(small);

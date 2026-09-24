@@ -232,6 +232,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         ForumCredential.forget()
         PoolCredential.forgetAll()
         for key in ["profile", "autoStartMining", "walletFile", "walletIndexByFile", "walletAddrByFile",
+                    "walletAddrByFile2", "walletCarriedByFile2",
                     "walletPassByFile", "walletCustomPaths", "walletWatched",
                     "walletAddress", "walletHasPassphrase"] {          // last two: keys from earlier builds
             UserDefaults.standard.removeObject(forKey: key)
@@ -310,7 +311,10 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
            let f = files.first(where: { $0.path == want }) { return f }
         return files.first(where: { $0.isDefault }) ?? files.first
     }
-    func walletAddrCache() -> [String: String] { (UserDefaults.standard.dictionary(forKey: "walletAddrByFile") as? [String: String]) ?? [:] }
+    /// v2 caches: the CLI's primary address became the standard two-leaf tree
+    /// (ML-DSA + SLH-DSA fallback); the single-leaf form is "carried".
+    func walletAddrCache() -> [String: String] { (UserDefaults.standard.dictionary(forKey: "walletAddrByFile2") as? [String: String]) ?? [:] }
+    func walletCarriedCache() -> [String: String] { (UserDefaults.standard.dictionary(forKey: "walletCarriedByFile2") as? [String: String]) ?? [:] }
     func walletPassCache() -> [String: Bool] { (UserDefaults.standard.dictionary(forKey: "walletPassByFile") as? [String: Bool]) ?? [:] }
     /// The selected key index, remembered per wallet file (0 = payment key,
     /// 101 = the forum-identity convention; any uint32 derives a real key).
@@ -333,6 +337,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         let credUsable = (sel?.isDefault == true) && ForumCredential.exists()
         return ["payout": profile["address"] ?? "",
                 "walletAddress": walletAddrCache()[walletAddrKey(selPath, selIdx)] ?? "",
+                "walletCarried": walletCarriedCache()[walletAddrKey(selPath, selIdx)] ?? "",
                 "selectedIndex": selIdx,
                 "wallets": files.map { ["name": $0.name, "file": $0.path, "format": $0.format, "card": $0.card, "default": $0.isDefault, "selected": $0.path == selPath] },
                 "selected": selPath,
@@ -362,6 +367,25 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                         if (x["immature"] as? Bool) == true { immature += sats } else { spendable += sats }
                     }
                     balances[addr] = ["spendable_sats": spendable, "immature_sats": immature, "height": u["height"] ?? 0]
+                }
+            }
+            if let main = state["walletAddress"] as? String, !main.isEmpty,
+               let carried = state["walletCarried"] as? String, !carried.isEmpty, carried != main {
+                if let u = try? await get(origin + "/api/utxos/" + carried) {
+                    var cs = 0, ci = 0
+                    for x in (u["utxos"] as? [[String: Any]] ?? []) {
+                        let sats = (x["amount_sats"] as? Int) ?? 0
+                        if (x["immature"] as? Bool) == true { ci += sats } else { cs += sats }
+                    }
+                    if var row = balances[main] as? [String: Any] {
+                        row["spendable_sats"] = ((row["spendable_sats"] as? Int) ?? 0) + cs
+                        row["immature_sats"] = ((row["immature_sats"] as? Int) ?? 0) + ci
+                        row["carried_sats"] = cs + ci
+                        balances[main] = row
+                    }
+                } else {
+                    // Half a balance must never look like the whole: show it as unavailable.
+                    balances.removeValue(forKey: main)
                 }
             }
             state["balances"] = balances
@@ -463,7 +487,11 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                 return
             }
             var addrs = self.walletAddrCache(); addrs[self.walletAddrKey(sel.path, idx)] = addr
-            UserDefaults.standard.set(addrs, forKey: "walletAddrByFile")
+            UserDefaults.standard.set(addrs, forKey: "walletAddrByFile2")
+            if let carried = d["carried_address"] as? String {
+                var c = self.walletCarriedCache(); c[self.walletAddrKey(sel.path, idx)] = carried
+                UserDefaults.standard.set(c, forKey: "walletCarriedByFile2")
+            }
             var passes = self.walletPassCache(); passes[sel.path] = !passphrase.isEmpty
             UserDefaults.standard.set(passes, forKey: "walletPassByFile")
             if remember, !passphrase.isEmpty, sel.isDefault {
