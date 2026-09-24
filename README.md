@@ -18,7 +18,7 @@ The testnet explorer defaults to https://superknet.com. The existing miner docum
 
 ## Window and menu bar
 
-Dashboard, Blocks, Miners and Setup are four separate tabs sized to the window. Block and miner tables have Previous / Next controls; the Setup log shows its latest lines with a Copy Log button for the full recent log. The green dark-mode switch remembers your preference and initially follows the system appearance.
+Dashboard, Blocks, Miners, Wallet and Setup are five separate tabs sized to the window. Block and miner tables have Previous / Next controls; the Setup log shows its latest lines with a Copy Log button for the full recent log. The green dark-mode switch remembers your preference and initially follows the system appearance.
 
 The menu-bar pickaxe shows the local hashrate and animates while the engine runs (respects Reduce Motion). Click it for a native black-and-lime dropdown with shares, blocks, uptime, Stop Mining and Full View. Full View or clicking the Dock icon restores the main window. Closing the main window hides it; use Quit MMM to stop the app and engine. Local stats refresh independently every two seconds, even when an explorer request is slow or the window is minimized. The build script shows named stages, commands, process IDs, elapsed time and compiler error logs.
 
@@ -31,6 +31,20 @@ Tetromino artwork reuses MineDifferent's HMAC-SHA256 / xorshift128 generator. Pa
 ## Automatic mining
 
 Start mining when MMM opens is enabled by default. Uncheck it in Setup to disable it; the checkbox saves immediately and does not stop a current session. On each app launch MMM makes one automatic start attempt using saved valid connection settings. Incomplete settings open Setup instead. Mainnet keeps its existing genesis checks. This does not add MMM as a macOS login item. Save Setup once after upgrading so any required pool password is stored in Keychain; macOS may request Keychain access after a rebuild.
+
+## Wallet tab — send XCF
+
+The WALLET tab turns MMM into a spending wallet without ever holding a key.
+Balances are public reads of the configured explorer (`/api/utxos`); unlocking
+derives this Mac's wallet address (key index 0) through the bundled xcoin-wallet
+CLI, and every send is approved with Touch ID (or the Mac password). Signing
+happens in the CLI's offline keytool — the ML-DSA-65 witness v3 path validated
+against the node's own test vectors — and the explorer only relays the one
+signed transaction. The wallet passphrase travels exclusively over the child
+process's stdin, is stored (if you opt in) in the login Keychain, and is never
+placed in an argument list, an environment variable, or a log. If your mining
+payout address differs from the wallet's key 0, the tab shows both balances and
+says plainly which one a send draws from.
 
 ## Forum sign-in (MineDifferent)
 

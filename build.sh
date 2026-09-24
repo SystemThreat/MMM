@@ -38,9 +38,15 @@ run_step() {
 printf '\nMMM / BUILD + INSTALL\nFive stages · detailed logs in build/logs\n'
 mkdir -p build/module-cache build/MMM.app/Contents/{MacOS,Resources} build/MMM.iconset
 APP="$PWD/build/MMM.app"
-run_step "Compile MMM window and menu bar" swiftc -module-cache-path build/module-cache -O App.swift MenuBar.swift Pickaxe.swift PoolCredential.swift ForumCredential.swift -o "$APP/Contents/MacOS/MMM" -framework Cocoa -framework WebKit -framework Security -framework LocalAuthentication
+run_step "Compile MMM window and menu bar" swiftc -module-cache-path build/module-cache -O App.swift MenuBar.swift Pickaxe.swift PoolCredential.swift ForumCredential.swift WalletService.swift -o "$APP/Contents/MacOS/MMM" -framework Cocoa -framework WebKit -framework Security -framework LocalAuthentication
 run_step "Compile and optimize MetalDAG mining engine" swiftc -module-cache-path build/module-cache -O Engine/main.swift Engine/Login.swift Engine/StatsServer.swift Engine/MetalDAGEngine.swift Engine/MetalDAGShader.swift -o "$APP/Contents/Resources/NerdMiner" -framework Metal -framework CoreGraphics
-run_step "Bundle four-tab dashboard and themes" cp index.html style.css app.js identicon.js pickaxe-white.svg "$APP/Contents/Resources/"
+run_step "Bundle five-tab dashboard and themes" cp index.html style.css app.js identicon.js pickaxe-white.svg "$APP/Contents/Resources/"
+# Bundle the wallet CLI (WALLET tab) when a checkout is available; without it
+# the app falls back to ~/x-Coin/wallet-cli at runtime.
+WALLET_SRC="${XCOIN_WALLET_SRC:-$HOME/x-Coin/xcoin-wallet}"
+if [ -x "$WALLET_SRC/xcoin-wallet" ] && [ -f "$WALLET_SRC/wallet_cli.py" ]; then
+  run_step "Bundle offline wallet CLI" sh -c "rm -rf '$APP/Contents/Resources/wallet' && mkdir -p '$APP/Contents/Resources/wallet' && cp '$WALLET_SRC/wallet_cli.py' '$WALLET_SRC/card_seed.py' '$WALLET_SRC/xcoin-wallet-cli' '$WALLET_SRC/xcoin-wallet' '$APP/Contents/Resources/wallet/'"
+fi
 run_step "Compile icon renderer" swiftc -module-cache-path build/module-cache Icon.swift -o build/make-icon
 build/make-icon build/MMM.png
 for size in 16 32 128 256 512; do

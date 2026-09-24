@@ -18,3 +18,21 @@ body{font-size:16px;letter-spacing:.035em}.brand{font-size:28px;letter-spacing:.
 @media(max-width:1100px){.edition>b{display:none}.brand{font-size:25px}.network-tag{font-size:13px}#miners th:first-child{width:34%}#miners th:nth-child(2){width:17%}#miners th:nth-child(3){width:20%}#miners th:nth-child(4){width:14%}#miners th:nth-child(5){width:15%}#miners th{font-size:12px}th,td{padding-left:10px;padding-right:10px}.metric{padding-left:7px;padding-right:7px}}
 
 .autostart-option{display:flex;align-items:center;gap:10px;font-size:14px;letter-spacing:.02em;text-transform:none;cursor:pointer}.autostart-option input{appearance:auto;accent-color:#99ca13;width:22px;height:22px;min-height:0;margin:0;padding:0;cursor:pointer;flex:none}
+/* WALLET tab */
+.wallet-balances{display:flex;flex-direction:column;gap:0;margin:0 0 18px}
+.wallet-row{display:grid;grid-template-columns:230px 1fr auto auto;align-items:center;gap:14px;padding:13px 0;border-bottom:1px solid var(--line)}
+.wallet-row label{font-size:10px;font-weight:bold;letter-spacing:1px;color:var(--muted)}
+.wallet-row strong{font-size:16px}
+.wallet-row small{color:var(--muted)}
+.wallet-note{font-size:11px;color:var(--muted);line-height:1.6;margin:10px 0 0}
+.wallet-receipt{margin-top:14px;padding:12px 16px;border:2px solid var(--ink);background:var(--lime);font-size:11px}
+#walletSendForm{display:grid;grid-template-columns:2fr 1fr auto;gap:14px;align-items:end;margin-top:6px}
+#walletSendForm .wide{grid-column:auto}
+#walletSendForm label{display:flex;flex-direction:column;gap:7px;font-size:10px;font-weight:bold;letter-spacing:1px}
+#walletSendForm input{border:2px solid var(--ink);padding:11px 12px;background:white}
+#walletSendForm p{grid-column:1/-1}
+#walletUnlockForm{display:grid;grid-template-columns:1fr auto auto;gap:14px;align-items:end;margin-top:6px}
+#walletUnlockForm label.wide{display:flex;flex-direction:column;gap:7px;font-size:10px;font-weight:bold;letter-spacing:1px}
+#walletUnlockForm input[type=password]{border:2px solid var(--ink);padding:11px 12px;background:white}
+#walletUnlockForm p{grid-column:1/-1}
+

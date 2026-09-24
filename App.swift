@@ -103,6 +103,11 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             emit(["type": "forumCred", "saved": false])
             emit(["type": "loginStatus", "state": "idle", "message": "Saved passphrase removed. Type it to sign in."])
         case "stop": process?.terminate()
+        case "walletRefresh": walletRefresh()
+        case "walletUnlock": walletUnlock(passphrase: b["passphrase"] as? String ?? "", remember: b["remember"] as? Bool ?? false)
+        case "walletSend":
+            guard let dest = b["dest"] as? String, let amount = b["amount"] as? String else { return }
+            walletSend(dest: dest, amount: amount)
         case "refresh": refresh(); refreshMiner()
         case "minimize": window.miniaturize(nil)
         case "copy": if let s = b["text"] as? String { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(s, forType:.string) }
@@ -179,6 +184,89 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         do { try task.run(); input.fileHandleForWriting.write(Data((password + "\n").utf8)); try? input.fileHandleForWriting.close(); process = task; miningActivity = ProcessInfo.processInfo.beginActivity(options:[.userInitiated,.idleSystemSleepDisabled],reason:"MMM background mining"); emit(["type":"started"]); refreshMiner(); refresh() }
         catch { emit(["type":"error","message":error.localizedDescription]) }
     }
+    // ── WALLET tab: balances via the explorer, sends via the wallet CLI ──────
+    // The GUI never touches a key. Balances are public reads of the explorer's
+    // /api/utxos; the send shells out to the wallet CLI, whose native keytool
+    // signs offline, and the explorer relays the one signed transaction.
+    var walletBusy = false
+    func walletHrp() -> String { profile["network"] == "mainnet" ? "xpa" : "txa" }
+    func walletState() -> [String: Any] {
+        ["payout": profile["address"] ?? "",
+         "walletAddress": UserDefaults.standard.string(forKey: "walletAddress") ?? "",
+         "credSaved": ForumCredential.exists(),
+         "cliFound": WalletService.cliPath() != nil]
+    }
+    @MainActor func walletRefresh() {
+        var state = walletState()
+        let origin = profile["explorer"] ?? ""
+        Task { @MainActor in
+            var balances: [String: Any] = [:]
+            var seen = Set<String>()
+            for key in ["payout", "walletAddress"] {
+                guard let addr = state[key] as? String, !addr.isEmpty, !seen.contains(addr) else { continue }
+                seen.insert(addr)
+                if let u = try? await get(origin + "/api/utxos/" + addr) {
+                    var spendable = 0, immature = 0
+                    for x in (u["utxos"] as? [[String: Any]] ?? []) {
+                        let sats = (x["amount_sats"] as? Int) ?? 0
+                        if (x["immature"] as? Bool) == true { immature += sats } else { spendable += sats }
+                    }
+                    balances[addr] = ["spendable_sats": spendable, "immature_sats": immature, "height": u["height"] ?? 0]
+                }
+            }
+            state["balances"] = balances
+            emit(["type": "wallet", "data": state])
+        }
+    }
+    func walletUnlock(passphrase: String, remember: Bool) {
+        guard !walletBusy else { return }
+        walletBusy = true
+        emit(["type": "walletStatus", "state": "working", "message": "Unlocking the wallet…"])
+        WalletService.run(["--json", "--hrp", walletHrp(), "address", "--index", "0"], passphrase: passphrase) { [weak self] r in
+            guard let self else { return }
+            self.walletBusy = false
+            guard r.code == 0, let d = WalletService.json(r), let addr = d["address"] as? String else {
+                self.emit(["type": "walletStatus", "state": "fail",
+                           "message": r.stderr.isEmpty ? "Could not unlock the wallet — is one set up? Run `xcoin-wallet-cli new`." : String(r.stderr.suffix(300))])
+                return
+            }
+            UserDefaults.standard.set(addr, forKey: "walletAddress")
+            if remember, !passphrase.isEmpty { try? ForumCredential.save(passphrase) }
+            self.emit(["type": "walletStatus", "state": "ok", "message": "Wallet unlocked."])
+            self.walletRefresh()
+        }
+    }
+    func walletSend(dest: String, amount: String) {
+        guard !walletBusy else { return }
+        let hrp = walletHrp()
+        guard validAddress(dest, hrp: hrp) else {
+            emit(["type": "walletStatus", "state": "fail", "message": "The destination is not a valid witness v3 \(hrp)1r… address."]); return
+        }
+        guard let amt = Double(amount), amt > 0 else {
+            emit(["type": "walletStatus", "state": "fail", "message": "Enter an amount above zero."]); return
+        }
+        let origin = profile["explorer"] ?? ""
+        // Touch ID (or the Mac password) approves EVERY send, saved passphrase or not.
+        ForumCredential.authenticate(reason: "send \(amount) XCF to \(String(dest.prefix(12)))… from this Mac's wallet") { [weak self] ok, why in
+            guard let self else { return }
+            guard ok else { self.emit(["type": "walletStatus", "state": "fail", "message": why ?? "Touch ID failed."]); return }
+            let pw = (try? ForumCredential.load()) ?? ""
+            self.walletBusy = true
+            self.emit(["type": "walletStatus", "state": "working", "message": "Signing offline and broadcasting…"])
+            WalletService.run(["--json", "--explorer", origin, "--hrp", hrp, "send", dest, amount, "--index", "0", "--yes"], passphrase: pw) { r in
+                self.walletBusy = false
+                guard r.code == 0, let d = WalletService.json(r), (d["broadcast"] as? Bool) == true, let txid = d["txid"] as? String else {
+                    self.emit(["type": "walletStatus", "state": "fail",
+                               "message": r.stderr.isEmpty ? "The send did not complete." : String(r.stderr.suffix(300))])
+                    return
+                }
+                self.emit(["type": "walletSent", "txid": txid, "fee": d["fee"] as? String ?? "?",
+                           "vsize": d["vsize"] as? Int ?? 0, "change": d["change"] as? String ?? "0"])
+                self.walletRefresh()
+            }
+        }
+    }
+
     // Sign in to MineDifferent with the bundled engine: `NerdMiner login` mints a
     // challenge, the wallet CLI signs it with key index 101 (the forum identity),
     // and we open the one-time link it prints. The passphrase travels only over

@@ -36,14 +36,15 @@ enum ForumCredential {
         return pw
     }
     static func forget() { SecItemDelete(query as CFDictionary) }
-    /// Touch ID, falling back to the Mac password — never skipped.
-    static func authenticate(_ done: @escaping (Bool, String?) -> Void) {
+    /// Touch ID, falling back to the Mac password — never skipped. The reason
+    /// is shown in the system prompt, so callers say exactly what is approved.
+    static func authenticate(reason: String = "sign in to MineDifferent with your saved wallet passphrase", _ done: @escaping (Bool, String?) -> Void) {
         let ctx = LAContext()
         var err: NSError?
         guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &err) else {
             done(false, err?.localizedDescription ?? "Touch ID is not available on this Mac."); return
         }
-        ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "sign in to MineDifferent with your saved wallet passphrase") { ok, e in
+        ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { ok, e in
             DispatchQueue.main.async { done(ok, ok ? nil : (e?.localizedDescription ?? "authentication failed")) }
         }
     }
