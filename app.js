@@ -35,6 +35,7 @@ window.receive=async msg=>{
  case 'forumCred':forumSaved=!!msg.saved;renderForum();break;
  case 'wallet':wallet=msg.data;renderWallet();break;
  case 'walletStatus':if(!$('view-create').hidden){$('createState').textContent=msg.state==='working'?'WORKING…':msg.state==='ok'?'✓ DONE':'✗ FAILED';$('createBtn').disabled=msg.state==='working';if(msg.message)notice(msg.message)}$('walletState').textContent=msg.state==='working'?'WORKING…':msg.state==='ok'?'✓ UNLOCKED':'✗ FAILED';if(msg.state==='fail')notice(msg.message||'Wallet action failed.');$('walletUnlockBtn').disabled=$('walletSendBtn').disabled=msg.state==='working';break;
+ case 'nuked':for(const id of ['settings','loginForm','walletUnlockForm','walletSendForm','walletWatchForm','walletCreateForm'])$(id)?.reset();wallet={};profile={};$('walletReceipt').hidden=true;$('walletSeedBox').hidden=true;$('walletIdx').value=0;forumSaved=false;renderForum();$('walletState').textContent='LOCKED';$('loginState').textContent='NOT SIGNED IN';selectTab('setup');break;
  case 'walletSeed':{const b=$('walletSeedBox');b.hidden=false;b.replaceChildren(el('b','MASTER SEED OF '+msg.name+' — WRITE IT ON PAPER NOW. It is shown ONCE and never again; anyone with it controls the wallet.'),el('code',msg.seed),(()=>{const d=el('button','I WROTE IT DOWN — OPEN WALLET ↗');d.type='button';d.onclick=()=>{b.replaceChildren();b.hidden=true;$('walletCreateForm').elements.name.value='';selectTab('wallet')};return d})());break}
  case 'walletSent':{$('walletUnlockBtn').disabled=$('walletSendBtn').disabled=false;const r=$('walletReceipt');r.hidden=false;const a=el('a',msg.txid.slice(0,20)+'…');a.href='#';a.onclick=e=>{e.preventDefault();send('open',{path:'/tx/'+msg.txid})};r.replaceChildren(el('b','SENT ✓ '),a,el('span',' · fee '+msg.fee+' XCF · '+msg.vsize+' vB'));$('walletSendForm').reset();notice('Sent. The explorer shows it once the next block confirms it.');break}
  }
@@ -66,6 +67,7 @@ function applyTheme(dark){document.documentElement.dataset.theme=dark?'dark':'li
 let initialTheme;try{initialTheme=localStorage.getItem('mmm-theme')}catch{}applyTheme(initialTheme?initialTheme==='dark':window.matchMedia('(prefers-color-scheme: dark)').matches);
 $('themeToggle').onclick=()=>applyTheme(document.documentElement.dataset.theme!=='dark');selectTab('dashboard');
 
+$('nukeBtn').onclick=()=>send('nuke');
 $('autoStart').onchange=()=>send('autoStartPreference',{enabled:$('autoStart').checked});
 let forumSaved=false;
 function renderForum(){$('passLabel').hidden=forumSaved;$('rememberLabel').hidden=forumSaved;$('forgetBtn').hidden=!forumSaved;$('loginBtn').textContent=forumSaved?'SIGN IN WITH TOUCH ID ↗':'SIGN IN TO MINEDIFFERENT ↗'}

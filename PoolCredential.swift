@@ -35,6 +35,11 @@ enum PoolCredential {
             guard added == errSecSuccess else { throw error(added) }
         } else if status != errSecSuccess { throw error(status) }
     }
+    /// Delete every saved pool password (all profiles) — the RESET button.
+    static func forgetAll() {
+        SecItemDelete([kSecClass as String:kSecClassGenericPassword,
+                       kSecAttrService as String:"com.xcoin.mmm.pool"] as CFDictionary)
+    }
     private static func error(_ status:OSStatus) -> NSError {
         NSError(domain:NSOSStatusErrorDomain,code:Int(status),userInfo:[NSLocalizedDescriptionKey: "Pool password could not be accessed in Keychain. Open Setup and try again. (\(status))"])
     }

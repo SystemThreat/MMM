@@ -106,6 +106,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "walletRefresh": walletRefresh()
         case "walletUnlock": walletUnlock(passphrase: b["passphrase"] as? String ?? "", remember: b["remember"] as? Bool ?? false)
         case "walletSelect": if let f = b["file"] as? String { walletSelect(file: f, index: b["index"] as? Int) }
+        case "nuke": nukeInputs()
         case "walletCreate":
             walletCreate(name: b["name"] as? String ?? "", passphrase: b["passphrase"] as? String ?? "", card: b["card"] as? Bool ?? false)
         case "walletWatchAdd":
@@ -205,6 +206,51 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         do { try task.run(); input.fileHandleForWriting.write(Data((password + "\n").utf8)); try? input.fileHandleForWriting.close(); process = task; miningActivity = ProcessInfo.processInfo.beginActivity(options:[.userInitiated,.idleSystemSleepDisabled],reason:"MMM background mining"); emit(["type":"started"]); refreshMiner(); refresh() }
         catch { emit(["type":"error","message":error.localizedDescription]) }
     }
+    /// RESET: forget everything MMM remembers — saved passphrase, wallet
+    /// selections, custom paths, watched addresses, mining setup, pool
+    /// password — as if freshly installed. Wallet FILES are never touched.
+    @MainActor func nukeInputs() {
+        guard process == nil else {
+            emit(["type": "error", "message": "Stop mining first — the reset clears the mining setup."]); return
+        }
+        guard !walletBusy, loginProcess == nil else {
+            emit(["type": "error", "message": "Wait for the current wallet action to finish, then reset."]); return
+        }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Reset MMM to a fresh start?"
+        alert.informativeText = """
+        Clears: the saved wallet passphrase (Touch ID), wallet file and key-index selections, custom wallet paths, watched addresses, the mining setup (payout address, pool, worker), the saved pool password, and the auto-start choice.
+
+        Not touched: your wallet files in ~/.xcoin and ~/.dex-wallet, and your coins. Nothing on-chain changes.
+        """
+        alert.addButton(withTitle: "Reset")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.first?.hasDestructiveAction = true
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        ForumCredential.forget()
+        PoolCredential.forgetAll()
+        for key in ["profile", "autoStartMining", "walletFile", "walletIndexByFile", "walletAddrByFile",
+                    "walletPassByFile", "walletCustomPaths", "walletWatched",
+                    "walletAddress", "walletHasPassphrase"] {          // last two: keys from earlier builds
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+        profile = ["network":"testnet", "explorer":"https://superknet.com", "host":"", "port":"", "address":"", "worker":"", "mode":"solo"]
+        password = ""; generation += 1; lastStats = [:]
+        emit(["type": "reset"])
+        emit(["type": "nuked"])
+        emit(["type": "profile", "data": profile])
+        emit(["type": "credential", "password": ""])
+        emit(["type": "forumCred", "saved": false])
+        emit(["type": "loginStatus", "state": "idle"])
+        emit(["type": "autoStartPreference", "enabled": UserDefaults.standard.bool(forKey: "autoStartMining")])
+        menuBar.update(["type": "profile", "data": profile])
+        refresh()
+        walletRefresh()
+        emit(["type": "setupRequired", "message": "MMM was reset to a fresh start. Your wallet files were not touched. Enter a payout address and pool to mine again."])
+    }
+
     // ── WALLET tab: balances via the explorer, sends via the wallet CLI ──────
     // The GUI never touches a key. Balances are public reads of the explorer's
     // /api/utxos; unlock and send shell out to the wallet CLI (whose offline
