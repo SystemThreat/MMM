@@ -106,6 +106,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "walletRefresh": walletRefresh()
         case "walletUnlock": walletUnlock(passphrase: b["passphrase"] as? String ?? "", remember: b["remember"] as? Bool ?? false)
         case "walletSelect": if let f = b["file"] as? String { walletSelect(file: f, index: b["index"] as? Int) }
+        case "walletCreate":
+            walletCreate(name: b["name"] as? String ?? "", passphrase: b["passphrase"] as? String ?? "", card: b["card"] as? Bool ?? false)
         case "walletWatchAdd":
             if let a = (b["address"] as? String)?.trimmingCharacters(in: .whitespaces).lowercased(),
                validAddress(a, hrp: walletHrp()) {
@@ -339,6 +341,61 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             UserDefaults.standard.set(custom, forKey: "walletCustomPaths")
             UserDefaults.standard.set(url.path, forKey: "walletFile")
             Task { @MainActor in self.walletRefresh() }
+        }
+    }
+    /// Create a wallet in ~/.xcoin through the CLI. Normal wallets get a
+    /// one-time seed reveal for the paper backup; card wallets never reveal a
+    /// seed by design (the backup is a duplicate card via `card-backup`).
+    func walletCreate(name rawName: String, passphrase: String, card: Bool) {
+        guard !walletBusy else { return }
+        var name = rawName.trimmingCharacters(in: .whitespaces)
+        if name.isEmpty { name = "wallet.mmm" }
+        if !name.hasSuffix(".mmm") { name += ".mmm" }
+        guard name.range(of: "^[A-Za-z0-9._-]{1,60}$", options: .regularExpression) != nil, !name.hasPrefix(".") else {
+            emit(["type": "walletStatus", "state": "fail", "message": "Wallet names are plain: letters, digits, dot, dash, underscore."]); return
+        }
+        let path = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".xcoin").appendingPathComponent(name).path
+        guard !FileManager.default.fileExists(atPath: path) else {
+            emit(["type": "walletStatus", "state": "fail", "message": "\(name) already exists — pick another name."]); return
+        }
+        if card, passphrase.isEmpty {
+            emit(["type": "walletStatus", "state": "fail", "message": "A card wallet needs a passphrase (it guards the card keys)."]); return
+        }
+        walletBusy = true
+        emit(["type": "walletStatus", "state": "working",
+              "message": card ? "Provisioning — when asked, tap and HOLD the NEW card on the reader…" : "Creating \(name)…"])
+        var args = ["--json", "--file", path, "new", "--offline"]
+        if card { args.append("--card") }
+        WalletService.run(args, passphrase: passphrase, timeout: card ? 400 : 120) { [weak self] r in
+            guard let self else { return }
+            guard r.code == 0, WalletService.json(r)?["file"] != nil else {
+                self.walletBusy = false
+                self.emit(["type": "walletStatus", "state": "fail",
+                           "message": r.stderr.isEmpty ? "Could not create the wallet." : String(r.stderr.suffix(300))])
+                return
+            }
+            UserDefaults.standard.set(path, forKey: "walletFile")
+            self.setWalletIndex(0, for: path)
+            var passes = self.walletPassCache(); passes[path] = !passphrase.isEmpty || card
+            UserDefaults.standard.set(passes, forKey: "walletPassByFile")
+            if card {
+                self.walletBusy = false
+                self.emit(["type": "walletStatus", "state": "ok",
+                           "message": "Card wallet created — the seed is sealed to the card and never shown. Make a duplicate with `xcoin-wallet-cli card-backup`. Unlock to derive its address (another tap)."])
+                self.walletRefresh()
+                return
+            }
+            // one-time seed reveal for the paper backup, then derive the address
+            WalletService.run(["--json", "--file", path, "seed", "--yes", "--no-clear"], passphrase: passphrase, timeout: 60) { r2 in
+                self.walletBusy = false
+                if r2.code == 0, let seed = WalletService.json(r2)?["seed"] as? String {
+                    self.emit(["type": "walletSeed", "name": name, "seed": seed])
+                } else {
+                    self.emit(["type": "walletStatus", "state": "fail",
+                               "message": "Wallet created, but the seed reveal failed — run `xcoin-wallet-cli --file ~/.xcoin/\(name) seed` in Terminal to back it up NOW."])
+                }
+                self.walletUnlock(passphrase: passphrase, remember: false)
+            }
         }
     }
     func walletUnlock(passphrase: String, remember: Bool) {

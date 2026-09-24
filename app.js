@@ -35,6 +35,7 @@ window.receive=async msg=>{
  case 'forumCred':forumSaved=!!msg.saved;renderForum();break;
  case 'wallet':wallet=msg.data;renderWallet();break;
  case 'walletStatus':$('walletState').textContent=msg.state==='working'?'WORKING…':msg.state==='ok'?'✓ UNLOCKED':'✗ FAILED';if(msg.state==='fail')notice(msg.message||'Wallet action failed.');$('walletUnlockBtn').disabled=$('walletSendBtn').disabled=msg.state==='working';break;
+ case 'walletSeed':{const b=$('walletSeedBox');b.hidden=false;b.replaceChildren(el('b','MASTER SEED OF '+msg.name+' — WRITE IT ON PAPER NOW. It is shown ONCE and never again; anyone with it controls the wallet.'),el('code',msg.seed),(()=>{const d=el('button','I WROTE IT DOWN — HIDE ✕');d.type='button';d.onclick=()=>{b.replaceChildren();b.hidden=true};return d})());break}
  case 'walletSent':{$('walletUnlockBtn').disabled=$('walletSendBtn').disabled=false;const r=$('walletReceipt');r.hidden=false;const a=el('a',msg.txid.slice(0,20)+'…');a.href='#';a.onclick=e=>{e.preventDefault();send('open',{path:'/tx/'+msg.txid})};r.replaceChildren(el('b','SENT ✓ '),a,el('span',' · fee '+msg.fee+' XCF · '+msg.vsize+' vB'));$('walletSendForm').reset();notice('Sent. The explorer shows it once the next block confirms it.');break}
  }
 };
@@ -73,7 +74,7 @@ $('forgetBtn').onclick=()=>send('loginForget');
 renderForum();
 
 // ── WALLET tab: balances from the explorer, sends via the offline keytool ────
-let wallet={},walletRevision=0;
+let wallet={},walletRevision=0,walletCreating=false;
 const xcfFmt=sats=>(sats/1e8).toLocaleString(undefined,{maximumFractionDigits:8});
 async function renderWallet(){
  const revision=++walletRevision;
@@ -87,12 +88,14 @@ async function renderWallet(){
  $('wSendPassLabel').hidden=!wallet.needsPassphraseEntry;
  $('wRememberLabel').hidden=!wallet.selectedIsDefault;
  $('walletNote').textContent=wallet.selectedCard
-  ?'Every send is approved with Touch ID, then the CLI waits for your xCoin card on the NFC reader \u2014 the seed only exists while card and passphrase meet. The explorer just relays the signed transaction.'
-  :'Every send is approved with Touch ID. Signing happens in the offline keytool on this Mac; the explorer only reports balances and relays the signed transaction. Fee is auto-estimated (about 0.000015 XCF).';
+  ?'Touch ID approves; then tap your xCoin card on the NFC reader. Keys never leave this Mac.'
+  :'Touch ID approves every send. Signing is offline on this Mac; the explorer only relays.';
  const unlocked=!!wallet.walletAddress;
  $('walletState').textContent=wallet.cliFound===false?'✗ WALLET CLI NOT FOUND':unlocked?'✓ UNLOCKED':'LOCKED';
- $('walletUnlockForm').hidden=unlocked||wallet.cliFound===false;
- $('walletSendForm').hidden=!unlocked||wallet.cliFound===false;
+ $('walletUnlockForm').hidden=walletCreating||unlocked||wallet.cliFound===false;
+ $('walletSendForm').hidden=walletCreating||!unlocked||wallet.cliFound===false;
+ $('walletCreateForm').hidden=!walletCreating||wallet.cliFound===false;
+ if(walletCreating&&!$('walletCreateForm').elements.name.value){const ns=(wallet.wallets||[]).map(f=>/^wallet(\d+)\.mmm$/.exec(f.name)).filter(Boolean).map(m=>+m[1]);const base=(wallet.wallets||[]).some(f=>f.name==='wallet.mmm')?2:0;$('walletCreateForm').elements.name.value='wallet'+String(Math.max(base,...ns,3)+1).padStart(3,'0')+'.mmm'}
  if(wallet.cliFound===false){box.append(el('p','Install the wallet CLI (github.com/SystemThreat/xcoin-wallet) to ~/x-Coin/wallet-cli, then reopen this tab.','empty'));return}
  $('walletSendForm').elements.dest.placeholder=(profile.network==='mainnet'?'xpa1r…':'txa1r…');
  const rows=[];
@@ -119,3 +122,6 @@ $('walletSendForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.targe
 $('walletFileSel').onchange=e=>{$('walletReceipt').hidden=true;send('walletSelect',{file:e.target.value,index:Math.max(0,Number($('walletIdx').value)||0)})};
 $('walletIdx').onchange=()=>{$('walletReceipt').hidden=true;send('walletSelect',{file:$('walletFileSel').value,index:Math.max(0,Number($('walletIdx').value)||0)})};
 $('walletBrowse').onclick=()=>send('walletBrowse');
+$('walletNewBtn').onclick=()=>{walletCreating=true;renderWallet()};
+$('walletCreateCancel').onclick=()=>{walletCreating=false;$('walletCreateForm').reset();renderWallet()};
+$('walletCreateForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);if(String(f.get('pass')||'')!==String(f.get('pass2')||'')){notice('Passphrases do not match.');return}walletCreating=false;send('walletCreate',{name:String(f.get('name')||'').trim(),passphrase:String(f.get('pass')||''),card:f.get('card')==='on'});e.target.reset()};
