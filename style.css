@@ -74,4 +74,11 @@ body{font-size:16px;letter-spacing:.035em}.brand{font-size:28px;letter-spacing:.
 .setup-tools{display:flex;align-items:center;gap:18px}
 #nukeBtn{border:2px solid #d9412b;color:#d9412b;background:transparent;padding:6px 12px;font-size:10px;font-weight:bold;letter-spacing:.08em;min-height:0}
 #nukeBtn:hover{background:#d9412b;color:#fff}
+/* copy-address button, shown wherever an address is rendered */
+.copy-btn{border:1px solid var(--line);background:transparent;color:var(--muted);font-size:9px;font-weight:bold;letter-spacing:.08em;padding:2px 6px;margin-left:8px;min-height:0;cursor:pointer;vertical-align:middle}
+.copy-btn:hover{border-color:var(--ink);color:var(--ink);background:var(--lime)}
+.copy-btn.done{background:var(--lime);color:#101600;border-color:var(--ink)}
+[data-theme=dark] .copy-btn:hover{color:#101600}
+.addr-line{display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
+.addr-line .copy-btn{margin-left:0;flex:none;width:auto;height:auto}
 
