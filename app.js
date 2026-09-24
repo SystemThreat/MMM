@@ -78,6 +78,17 @@ const xcfFmt=sats=>(sats/1e8).toLocaleString(undefined,{maximumFractionDigits:8}
 async function renderWallet(){
  const revision=++walletRevision;
  const box=$('walletBalances');box.replaceChildren();
+ const sel=$('walletFileSel');sel.replaceChildren();
+ for(const f of (wallet.wallets||[])){const o=el('option',f.name+(f.default?' (default)':'')+(f.card?' \u00b7 NFC card':''));o.value=f.file;o.selected=!!f.selected;sel.append(o)}
+ if(!(wallet.wallets||[]).length)sel.append(el('option','no wallet files found'));
+ const selInfo=(wallet.wallets||[]).find(f=>f.selected);
+ $('walletFormat').textContent=selInfo?selInfo.format.toUpperCase()+(selInfo.card?' \u00b7 TAP TO UNLOCK':''):'';
+ $('walletIdx').value=wallet.selectedIndex??0;
+ $('wSendPassLabel').hidden=!wallet.needsPassphraseEntry;
+ $('wRememberLabel').hidden=!wallet.selectedIsDefault;
+ $('walletNote').textContent=wallet.selectedCard
+  ?'Every send is approved with Touch ID, then the CLI waits for your xCoin card on the NFC reader \u2014 the seed only exists while card and passphrase meet. The explorer just relays the signed transaction.'
+  :'Every send is approved with Touch ID. Signing happens in the offline keytool on this Mac; the explorer only reports balances and relays the signed transaction. Fee is auto-estimated (about 0.000015 XCF).';
  const unlocked=!!wallet.walletAddress;
  $('walletState').textContent=wallet.cliFound===false?'✗ WALLET CLI NOT FOUND':unlocked?'✓ UNLOCKED':'LOCKED';
  $('walletUnlockForm').hidden=unlocked||wallet.cliFound===false;
@@ -85,7 +96,7 @@ async function renderWallet(){
  if(wallet.cliFound===false){box.append(el('p','Install the wallet CLI (github.com/SystemThreat/xcoin-wallet) to ~/x-Coin/wallet-cli, then reopen this tab.','empty'));return}
  $('walletSendForm').elements.dest.placeholder=(profile.network==='mainnet'?'xpa1r…':'txa1r…');
  const rows=[];
- if(wallet.walletAddress)rows.push(['THIS MAC\u2019S WALLET (SENDS FROM HERE)',wallet.walletAddress]);
+ if(wallet.walletAddress)rows.push(['SELECTED WALLET \u00b7 INDEX '+(wallet.selectedIndex??0)+' (SENDS FROM HERE)',wallet.walletAddress]);
  if(wallet.payout&&wallet.payout!==wallet.walletAddress)rows.push(['MINING PAYOUT ADDRESS',wallet.payout]);
  if(!rows.length){box.append(el('p','Unlock to derive this Mac\u2019s wallet address; set a payout address in SETUP to watch it here.','empty'));return}
  for(const [label,addr] of rows){
@@ -99,4 +110,7 @@ async function renderWallet(){
  if(wallet.payout&&wallet.walletAddress&&wallet.payout!==wallet.walletAddress)box.append(el('p','Your payout address is not this wallet\u2019s key 0 — sends draw from the wallet balance above. Point mining at the wallet address to make them one.','wallet-note'));
 }
 $('walletUnlockForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);send('walletUnlock',{passphrase:String(f.get('passphrase')||''),remember:f.get('remember')==='on'});e.target.reset()};
-$('walletSendForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);$('walletReceipt').hidden=true;send('walletSend',{dest:String(f.get('dest')||'').trim(),amount:String(f.get('amount')||'').trim()})};
+$('walletSendForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);$('walletReceipt').hidden=true;send('walletSend',{dest:String(f.get('dest')||'').trim(),amount:String(f.get('amount')||'').trim(),passphrase:String(f.get('passphrase')||'')});e.target.elements.passphrase.value=''};
+$('walletFileSel').onchange=e=>{$('walletReceipt').hidden=true;send('walletSelect',{file:e.target.value,index:Math.max(0,Number($('walletIdx').value)||0)})};
+$('walletIdx').onchange=()=>{$('walletReceipt').hidden=true;send('walletSelect',{file:$('walletFileSel').value,index:Math.max(0,Number($('walletIdx').value)||0)})};
+$('walletBrowse').onclick=()=>send('walletBrowse');

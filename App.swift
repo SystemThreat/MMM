@@ -105,9 +105,11 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "stop": process?.terminate()
         case "walletRefresh": walletRefresh()
         case "walletUnlock": walletUnlock(passphrase: b["passphrase"] as? String ?? "", remember: b["remember"] as? Bool ?? false)
+        case "walletSelect": if let f = b["file"] as? String { walletSelect(file: f, index: b["index"] as? Int) }
+        case "walletBrowse": Task { @MainActor in walletBrowse() }
         case "walletSend":
             guard let dest = b["dest"] as? String, let amount = b["amount"] as? String else { return }
-            walletSend(dest: dest, amount: amount)
+            walletSend(dest: dest, amount: amount, formPass: b["passphrase"] as? String ?? "")
         case "refresh": refresh(); refreshMiner()
         case "minimize": window.miniaturize(nil)
         case "copy": if let s = b["text"] as? String { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(s, forType:.string) }
@@ -186,15 +188,94 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     }
     // ── WALLET tab: balances via the explorer, sends via the wallet CLI ──────
     // The GUI never touches a key. Balances are public reads of the explorer's
-    // /api/utxos; the send shells out to the wallet CLI, whose native keytool
-    // signs offline, and the explorer relays the one signed transaction.
+    // /api/utxos; unlock and send shell out to the wallet CLI (whose offline
+    // keytool signs) against WHICHEVER wallet file the user selected — the
+    // standard ~/.xcoin candidates, the dex-wallet-era files, or a custom path.
+    // Card wallets (XCOINMMM5, and card-kind v2/v3/v4) additionally wait for
+    // the NTAG 424 NFC tap inside the CLI; the status line says so.
     var walletBusy = false
     func walletHrp() -> String { profile["network"] == "mainnet" ? "xpa" : "txa" }
+
+    struct WalletFile { let name: String; let path: String; let format: String; let card: Bool; let isDefault: Bool }
+    /// First bytes tell the format: "XCOINMMM<v>\n" then (v4) a kind byte.
+    func sniffFormat(_ path: String) -> (String, Bool) {
+        guard let fh = FileHandle(forReadingAtPath: path) else { return ("unreadable", false) }
+        let head = (try? fh.read(upToCount: 12)) ?? Data()
+        try? fh.close()
+        guard head.count >= 10, let magic = String(data: head.prefix(10), encoding: .ascii), magic.hasPrefix("XCOINMMM") else {
+            return (path.hasSuffix(".seed") ? "seed" : "unknown", false)
+        }
+        let v = String(magic.dropFirst(8).prefix(1))
+        let card = v == "2" || v == "3" || v == "5" || (v == "4" && head.count > 10 && (head[10] == 2 || head[10] == 3))
+        return ("mmm" + v, card)
+    }
+    /// Every wallet file we can offer: ~/.xcoin (with the CLI's default
+    /// precedence), the dex-wallet era's ~/.dex-wallet, then custom paths.
+    func walletFiles() -> [WalletFile] {
+        let fm = FileManager.default, home = fm.homeDirectoryForCurrentUser
+        var out: [WalletFile] = []; var seen = Set<String>()
+        let xcoin = home.appendingPathComponent(".xcoin")
+        let xmmms = ((try? fm.contentsOfDirectory(atPath: xcoin.path)) ?? []).filter { $0.hasSuffix(".mmm") }.sorted()
+        var defaultPath = ""
+        if xmmms.contains("wallet.mmm") { defaultPath = xcoin.appendingPathComponent("wallet.mmm").path }
+        else if let first = xmmms.first { defaultPath = xcoin.appendingPathComponent(first).path }
+        else if fm.fileExists(atPath: xcoin.appendingPathComponent("wallet.seed").path) { defaultPath = xcoin.appendingPathComponent("wallet.seed").path }
+        for dir in [".xcoin", ".dex-wallet"] {
+            let d = home.appendingPathComponent(dir)
+            var names = ((try? fm.contentsOfDirectory(atPath: d.path)) ?? []).filter { $0.hasSuffix(".mmm") }.sorted()
+            if fm.fileExists(atPath: d.appendingPathComponent("wallet.seed").path) { names.append("wallet.seed") }
+            for n in names {
+                let path = d.appendingPathComponent(n).path
+                guard !seen.contains(path) else { continue }
+                seen.insert(path)
+                let (fmt, card) = sniffFormat(path)
+                out.append(WalletFile(name: dir == ".xcoin" ? n : dir + "/" + n, path: path, format: fmt, card: card, isDefault: path == defaultPath))
+            }
+        }
+        for path in UserDefaults.standard.stringArray(forKey: "walletCustomPaths") ?? [] where fm.fileExists(atPath: path) && !seen.contains(path) {
+            seen.insert(path)
+            let (fmt, card) = sniffFormat(path)
+            out.append(WalletFile(name: (path as NSString).abbreviatingWithTildeInPath, path: path, format: fmt, card: card, isDefault: path == defaultPath))
+        }
+        return out
+    }
+    func selectedWallet() -> WalletFile? {
+        let files = walletFiles()
+        if let want = UserDefaults.standard.string(forKey: "walletFile"), !want.isEmpty,
+           let f = files.first(where: { $0.path == want }) { return f }
+        return files.first(where: { $0.isDefault }) ?? files.first
+    }
+    func walletAddrCache() -> [String: String] { (UserDefaults.standard.dictionary(forKey: "walletAddrByFile") as? [String: String]) ?? [:] }
+    func walletPassCache() -> [String: Bool] { (UserDefaults.standard.dictionary(forKey: "walletPassByFile") as? [String: Bool]) ?? [:] }
+    /// The selected key index, remembered per wallet file (0 = payment key,
+    /// 101 = the forum-identity convention; any uint32 derives a real key).
+    func walletIndex(for path: String) -> Int {
+        ((UserDefaults.standard.dictionary(forKey: "walletIndexByFile") as? [String: Int]) ?? [:])[path] ?? 0
+    }
+    func setWalletIndex(_ idx: Int, for path: String) {
+        var d = (UserDefaults.standard.dictionary(forKey: "walletIndexByFile") as? [String: Int]) ?? [:]
+        d[path] = max(0, idx)
+        UserDefaults.standard.set(d, forKey: "walletIndexByFile")
+    }
+    /// Derived-address cache key: one address per (file, index) pair.
+    func walletAddrKey(_ path: String, _ idx: Int) -> String { path + "#" + String(idx) }
+
     func walletState() -> [String: Any] {
-        ["payout": profile["address"] ?? "",
-         "walletAddress": UserDefaults.standard.string(forKey: "walletAddress") ?? "",
-         "credSaved": ForumCredential.exists(),
-         "cliFound": WalletService.cliPath() != nil]
+        let files = walletFiles(), sel = selectedWallet()
+        let selPath = sel?.path ?? ""
+        let selIdx = walletIndex(for: selPath)
+        let hasPass = walletPassCache()[selPath] ?? (sel?.card == true)   // a card wallet always has one
+        let credUsable = (sel?.isDefault == true) && ForumCredential.exists()
+        return ["payout": profile["address"] ?? "",
+                "walletAddress": walletAddrCache()[walletAddrKey(selPath, selIdx)] ?? "",
+                "selectedIndex": selIdx,
+                "wallets": files.map { ["name": $0.name, "file": $0.path, "format": $0.format, "card": $0.card, "default": $0.isDefault, "selected": $0.path == selPath] },
+                "selected": selPath,
+                "selectedCard": sel?.card ?? false,
+                "selectedIsDefault": sel?.isDefault ?? false,
+                "needsPassphraseEntry": hasPass && !credUsable,
+                "credSaved": ForumCredential.exists(),
+                "cliFound": WalletService.cliPath() != nil]
     }
     @MainActor func walletRefresh() {
         var state = walletState()
@@ -218,21 +299,50 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             emit(["type": "wallet", "data": state])
         }
     }
+    func walletSelect(file: String, index: Int? = nil) {
+        guard walletFiles().contains(where: { $0.path == file }) else { return }
+        UserDefaults.standard.set(file, forKey: "walletFile")
+        if let index { setWalletIndex(index, for: file) }
+        Task { @MainActor in walletRefresh() }
+    }
+    @MainActor func walletBrowse() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+        panel.showsHiddenFiles = true
+        panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".xcoin")
+        panel.message = "Choose a wallet file (.mmm, or a legacy .seed)"
+        panel.begin { [weak self] resp in
+            guard let self, resp == .OK, let url = panel.url else { return }
+            var custom = UserDefaults.standard.stringArray(forKey: "walletCustomPaths") ?? []
+            if !custom.contains(url.path) { custom.append(url.path) }
+            UserDefaults.standard.set(custom, forKey: "walletCustomPaths")
+            UserDefaults.standard.set(url.path, forKey: "walletFile")
+            Task { @MainActor in self.walletRefresh() }
+        }
+    }
     func walletUnlock(passphrase: String, remember: Bool) {
-        guard !walletBusy else { return }
+        guard !walletBusy, let sel = selectedWallet() else { return }
+        if sel.card, passphrase.isEmpty {
+            emit(["type": "walletStatus", "state": "fail", "message": "This is a card wallet — its passphrase is required (it guards the card keys)."]); return
+        }
+        let idx = walletIndex(for: sel.path)
         walletBusy = true
-        emit(["type": "walletStatus", "state": "working", "message": "Unlocking the wallet…"])
-        WalletService.run(["--json", "--hrp", walletHrp(), "address", "--index", "0"], passphrase: passphrase) { [weak self] r in
+        emit(["type": "walletStatus", "state": "working",
+              "message": sel.card ? "Unlocking — tap your xCoin card on the NFC reader when prompted…" : "Unlocking the wallet…"])
+        WalletService.run(["--json", "--hrp", walletHrp(), "--file", sel.path, "address", "--index", String(idx)],
+                          passphrase: passphrase, timeout: sel.card ? 300 : 180) { [weak self] r in
             guard let self else { return }
             self.walletBusy = false
             guard r.code == 0, let d = WalletService.json(r), let addr = d["address"] as? String else {
                 self.emit(["type": "walletStatus", "state": "fail",
-                           "message": r.stderr.isEmpty ? "Could not unlock the wallet — is one set up? Run `xcoin-wallet-cli new`." : String(r.stderr.suffix(300))])
+                           "message": r.stderr.isEmpty ? "Could not unlock \(sel.name) — is one set up? Run `xcoin-wallet-cli new`." : String(r.stderr.suffix(300))])
                 return
             }
-            UserDefaults.standard.set(addr, forKey: "walletAddress")
-            UserDefaults.standard.set(!passphrase.isEmpty, forKey: "walletHasPassphrase")
-            if remember, !passphrase.isEmpty {
+            var addrs = self.walletAddrCache(); addrs[self.walletAddrKey(sel.path, idx)] = addr
+            UserDefaults.standard.set(addrs, forKey: "walletAddrByFile")
+            var passes = self.walletPassCache(); passes[sel.path] = !passphrase.isEmpty
+            UserDefaults.standard.set(passes, forKey: "walletPassByFile")
+            if remember, !passphrase.isEmpty, sel.isDefault {
                 try? ForumCredential.save(passphrase)
                 self.emit(["type": "forumCred", "saved": ForumCredential.exists()])   // the SETUP tab shares this credential
             }
@@ -240,8 +350,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             self.walletRefresh()
         }
     }
-    func walletSend(dest: String, amount: String) {
-        guard !walletBusy else { return }
+    func walletSend(dest: String, amount: String, formPass: String) {
+        guard !walletBusy, let sel = selectedWallet() else { return }
         let hrp = walletHrp()
         guard validAddress(dest, hrp: hrp) else {
             emit(["type": "walletStatus", "state": "fail", "message": "The destination is not a valid witness v3 \(hrp)1r… address."]); return
@@ -250,27 +360,32 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             emit(["type": "walletStatus", "state": "fail", "message": "Enter an amount above zero."]); return
         }
         let origin = profile["explorer"] ?? ""
-        // A passphrase-protected wallet with nothing saved cannot sign: say so
-        // instead of failing deep in the CLI with a decryption error.
-        if UserDefaults.standard.bool(forKey: "walletHasPassphrase"), !ForumCredential.exists() {
+        let credUsable = sel.isDefault && ForumCredential.exists()
+        let hasPass = walletPassCache()[sel.path] ?? sel.card
+        // A passphrase-protected wallet needs the passphrase from somewhere:
+        // the send form's field, or (default wallet only) the saved credential.
+        if hasPass, formPass.isEmpty, !credUsable {
             emit(["type": "walletStatus", "state": "fail",
-                  "message": "This wallet has a passphrase and none is saved. Unlock again with “Remember with Touch ID” checked."]); return
+                  "message": "Type this wallet's passphrase in the send form (only the default wallet can use the saved Touch ID passphrase)."]); return
         }
         walletBusy = true
         emit(["type": "walletStatus", "state": "working", "message": "Waiting for Touch ID…"])
         // Touch ID (or the Mac password) approves EVERY send, saved passphrase or not.
-        ForumCredential.authenticate(reason: "send \(amount) XCF to \(String(dest.prefix(12)))… from this Mac's wallet") { [weak self] ok, why in
+        ForumCredential.authenticate(reason: "send \(amount) XCF to \(String(dest.prefix(12)))… from \(sel.name)") { [weak self] ok, why in
             guard let self else { return }
             guard ok else { self.walletBusy = false; self.emit(["type": "walletStatus", "state": "fail", "message": why ?? "Touch ID failed."]); return }
-            let pw = (try? ForumCredential.load()) ?? ""
-            self.emit(["type": "walletStatus", "state": "working", "message": "Signing offline and broadcasting…"])
+            let pw = !formPass.isEmpty ? formPass : (credUsable ? ((try? ForumCredential.load()) ?? "") : "")
+            self.emit(["type": "walletStatus", "state": "working",
+                       "message": sel.card ? "Signing — tap your xCoin card on the NFC reader…" : "Signing offline and broadcasting…"])
             Task { @MainActor in
                 // Never sign against an explorer serving a different chain.
                 if let stats = try? await self.get(origin + "/api/stats"), let ehrp = stats["hrp"] as? String, ehrp != hrp {
                     self.walletBusy = false
                     self.emit(["type": "walletStatus", "state": "fail", "message": "The explorer is serving a different network — fix the explorer URL in SETUP."]); return
                 }
-                WalletService.run(["--json", "--explorer", origin, "--hrp", hrp, "send", dest, amount, "--index", "0", "--yes"], passphrase: pw) { r in
+                let idx = self.walletIndex(for: sel.path)
+                WalletService.run(["--json", "--explorer", origin, "--hrp", hrp, "--file", sel.path, "send", dest, amount, "--index", String(idx), "--yes"],
+                                  passphrase: pw, timeout: sel.card ? 300 : 180) { r in
                     self.walletBusy = false
                     guard r.code == 0, let d = WalletService.json(r), (d["broadcast"] as? Bool) == true, let txid = d["txid"] as? String else {
                         self.emit(["type": "walletStatus", "state": "fail",
