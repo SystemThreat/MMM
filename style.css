@@ -29,10 +29,10 @@ body{font-size:16px;letter-spacing:.035em}.brand{font-size:28px;letter-spacing:.
 #walletSendForm{display:grid;grid-template-columns:2fr 1fr auto;gap:14px;align-items:end;margin-top:6px}
 #walletSendForm .wide{grid-column:auto}
 #walletSendForm label{display:flex;flex-direction:column;gap:7px;font-size:10px;font-weight:bold;letter-spacing:1px}
-#walletSendForm input{border:2px solid var(--ink);padding:11px 12px;background:white}
+#walletSendForm input{border:2px solid var(--ink);padding:11px 12px;background:var(--paper)}
 #walletSendForm p{grid-column:1/-1}
 #walletUnlockForm{display:grid;grid-template-columns:1fr auto auto;gap:14px;align-items:end;margin-top:6px}
 #walletUnlockForm label.wide{display:flex;flex-direction:column;gap:7px;font-size:10px;font-weight:bold;letter-spacing:1px}
-#walletUnlockForm input[type=password]{border:2px solid var(--ink);padding:11px 12px;background:white}
+#walletUnlockForm input[type=password]{border:2px solid var(--ink);padding:11px 12px;background:var(--paper)}
 #walletUnlockForm p{grid-column:1/-1}
-
+[data-theme=dark] .wallet-receipt{color:#101600;border-color:#89ad28}

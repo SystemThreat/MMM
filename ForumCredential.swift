@@ -2,11 +2,12 @@ import Foundation
 import Security
 import LocalAuthentication
 
-/// The wallet passphrase for one-click forum sign-in. Stored in the login
-/// keychain like the pool password, saved only after a sign-in that actually
-/// worked, and read back only after the user passes Touch ID (or the Mac
-/// password when Touch ID is unavailable — a closed lid, for example).
-/// Forgetting it deletes the item; nothing else ever reads it.
+/// The wallet passphrase, shared by the two features that unlock the wallet:
+/// one-click forum sign-in and WALLET-tab sends. Stored in the login keychain
+/// like the pool password, and read back only after the user passes Touch ID
+/// (or the Mac password when Touch ID is unavailable — a closed lid, for
+/// example), with the prompt naming the exact action being approved.
+/// Forgetting it (SETUP tab) deletes the item for both features.
 enum ForumCredential {
     private static let query: [String: Any] = [
         kSecClass as String: kSecClassGenericPassword,

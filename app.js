@@ -35,7 +35,7 @@ window.receive=async msg=>{
  case 'forumCred':forumSaved=!!msg.saved;renderForum();break;
  case 'wallet':wallet=msg.data;renderWallet();break;
  case 'walletStatus':$('walletState').textContent=msg.state==='working'?'WORKING…':msg.state==='ok'?'✓ UNLOCKED':'✗ FAILED';if(msg.state==='fail')notice(msg.message||'Wallet action failed.');$('walletUnlockBtn').disabled=$('walletSendBtn').disabled=msg.state==='working';break;
- case 'walletSent':{const r=$('walletReceipt');r.hidden=false;const a=el('a',msg.txid.slice(0,20)+'…');a.href='#';a.onclick=e=>{e.preventDefault();send('open',{path:'/tx/'+msg.txid})};r.replaceChildren(el('b','SENT ✓ '),a,el('span',' · fee '+msg.fee+' XCF · '+msg.vsize+' vB'));$('walletSendForm').reset();notice('Sent. The explorer shows it once the next block confirms it.');break}
+ case 'walletSent':{$('walletUnlockBtn').disabled=$('walletSendBtn').disabled=false;const r=$('walletReceipt');r.hidden=false;const a=el('a',msg.txid.slice(0,20)+'…');a.href='#';a.onclick=e=>{e.preventDefault();send('open',{path:'/tx/'+msg.txid})};r.replaceChildren(el('b','SENT ✓ '),a,el('span',' · fee '+msg.fee+' XCF · '+msg.vsize+' vB'));$('walletSendForm').reset();notice('Sent. The explorer shows it once the next block confirms it.');break}
  }
 };
 async function updateProfile(){$('networkLabel').textContent=profile.network==='mainnet'?'MAINNET / GENESIS VERIFIED BEFORE START':'TESTNET A / REHEARSAL';$('actionNote').textContent=profile.network==='mainnet'?'Uses the selected mainnet pool and genesis.':'Testnet rewards are rehearsal coins.';$('payout').replaceChildren(profile.address?await person(profile.address):el('span','Set your payout address below.'))}
@@ -73,9 +73,10 @@ $('forgetBtn').onclick=()=>send('loginForget');
 renderForum();
 
 // ── WALLET tab: balances from the explorer, sends via the offline keytool ────
-let wallet={};
+let wallet={},walletRevision=0;
 const xcfFmt=sats=>(sats/1e8).toLocaleString(undefined,{maximumFractionDigits:8});
 async function renderWallet(){
+ const revision=++walletRevision;
  const box=$('walletBalances');box.replaceChildren();
  const unlocked=!!wallet.walletAddress;
  $('walletState').textContent=wallet.cliFound===false?'✗ WALLET CLI NOT FOUND':unlocked?'✓ UNLOCKED':'LOCKED';
@@ -92,6 +93,7 @@ async function renderWallet(){
   row.append(el('label',label));row.append(await person(addr));
   row.append(el('strong',b?xcfFmt(b.spendable_sats)+' XCF':'—'));
   row.append(el('small',b?(b.immature_sats>0?'+ '+xcfFmt(b.immature_sats)+' maturing':'spendable'):'explorer unavailable'));
+  if(revision!==walletRevision)return;
   box.append(row);
  }
  if(wallet.payout&&wallet.walletAddress&&wallet.payout!==wallet.walletAddress)box.append(el('p','Your payout address is not this wallet\u2019s key 0 — sends draw from the wallet balance above. Point mining at the wallet address to make them one.','wallet-note'));

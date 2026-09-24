@@ -231,7 +231,11 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                 return
             }
             UserDefaults.standard.set(addr, forKey: "walletAddress")
-            if remember, !passphrase.isEmpty { try? ForumCredential.save(passphrase) }
+            UserDefaults.standard.set(!passphrase.isEmpty, forKey: "walletHasPassphrase")
+            if remember, !passphrase.isEmpty {
+                try? ForumCredential.save(passphrase)
+                self.emit(["type": "forumCred", "saved": ForumCredential.exists()])   // the SETUP tab shares this credential
+            }
             self.emit(["type": "walletStatus", "state": "ok", "message": "Wallet unlocked."])
             self.walletRefresh()
         }
@@ -246,23 +250,38 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             emit(["type": "walletStatus", "state": "fail", "message": "Enter an amount above zero."]); return
         }
         let origin = profile["explorer"] ?? ""
+        // A passphrase-protected wallet with nothing saved cannot sign: say so
+        // instead of failing deep in the CLI with a decryption error.
+        if UserDefaults.standard.bool(forKey: "walletHasPassphrase"), !ForumCredential.exists() {
+            emit(["type": "walletStatus", "state": "fail",
+                  "message": "This wallet has a passphrase and none is saved. Unlock again with “Remember with Touch ID” checked."]); return
+        }
+        walletBusy = true
+        emit(["type": "walletStatus", "state": "working", "message": "Waiting for Touch ID…"])
         // Touch ID (or the Mac password) approves EVERY send, saved passphrase or not.
         ForumCredential.authenticate(reason: "send \(amount) XCF to \(String(dest.prefix(12)))… from this Mac's wallet") { [weak self] ok, why in
             guard let self else { return }
-            guard ok else { self.emit(["type": "walletStatus", "state": "fail", "message": why ?? "Touch ID failed."]); return }
+            guard ok else { self.walletBusy = false; self.emit(["type": "walletStatus", "state": "fail", "message": why ?? "Touch ID failed."]); return }
             let pw = (try? ForumCredential.load()) ?? ""
-            self.walletBusy = true
             self.emit(["type": "walletStatus", "state": "working", "message": "Signing offline and broadcasting…"])
-            WalletService.run(["--json", "--explorer", origin, "--hrp", hrp, "send", dest, amount, "--index", "0", "--yes"], passphrase: pw) { r in
-                self.walletBusy = false
-                guard r.code == 0, let d = WalletService.json(r), (d["broadcast"] as? Bool) == true, let txid = d["txid"] as? String else {
-                    self.emit(["type": "walletStatus", "state": "fail",
-                               "message": r.stderr.isEmpty ? "The send did not complete." : String(r.stderr.suffix(300))])
-                    return
+            Task { @MainActor in
+                // Never sign against an explorer serving a different chain.
+                if let stats = try? await self.get(origin + "/api/stats"), let ehrp = stats["hrp"] as? String, ehrp != hrp {
+                    self.walletBusy = false
+                    self.emit(["type": "walletStatus", "state": "fail", "message": "The explorer is serving a different network — fix the explorer URL in SETUP."]); return
                 }
-                self.emit(["type": "walletSent", "txid": txid, "fee": d["fee"] as? String ?? "?",
-                           "vsize": d["vsize"] as? Int ?? 0, "change": d["change"] as? String ?? "0"])
-                self.walletRefresh()
+                WalletService.run(["--json", "--explorer", origin, "--hrp", hrp, "send", dest, amount, "--index", "0", "--yes"], passphrase: pw) { r in
+                    self.walletBusy = false
+                    guard r.code == 0, let d = WalletService.json(r), (d["broadcast"] as? Bool) == true, let txid = d["txid"] as? String else {
+                        self.emit(["type": "walletStatus", "state": "fail",
+                                   "message": r.stderr.isEmpty ? "The send did not complete." : String(r.stderr.suffix(300))])
+                        return
+                    }
+                    self.emit(["type": "walletStatus", "state": "ok", "message": "Sent."])
+                    self.emit(["type": "walletSent", "txid": txid, "fee": d["fee"] as? String ?? "?",
+                               "vsize": d["vsize"] as? Int ?? 0, "change": d["change"] as? String ?? "0"])
+                    self.walletRefresh()
+                }
             }
         }
     }

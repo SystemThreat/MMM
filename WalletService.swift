@@ -55,8 +55,11 @@ enum WalletService {
         }
     }
 
-    /// The last JSON object the CLI printed (its --json output line).
+    /// The JSON object the CLI printed. --json output is pretty-printed and
+    /// multi-line, so parse the whole stdout first; the per-line reverse scan
+    /// remains for outputs where one JSON line follows other text.
     static func json(_ r: CLIResult) -> [String: Any]? {
+        if let d = try? JSONSerialization.jsonObject(with: Data(r.stdout.utf8)) as? [String: Any] { return d }
         for line in r.stdout.split(separator: "\n").reversed() {
             if let d = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] { return d }
         }
