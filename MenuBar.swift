@@ -17,6 +17,7 @@ final class MenuBarController: NSObject {
     var frame = 0
     private lazy var pickaxeFrames = (0..<16).map { menuBarPickaxe(angle:26 * sin(Double($0) * .pi / 8)) }
     private var mining = false
+    private var paused = ""   // the schedule's reason while it holds a stopped engine
     private var hashrate = "— H/s"
     private let lime = NSColor(calibratedRed:199/255, green:1, blue:46/255, alpha:1)
 
@@ -80,7 +81,7 @@ final class MenuBarController: NSObject {
             let p = event["data"] as? [String:String] ?? [:]
             network.stringValue = (p["network"] == "mainnet" ? "MAINNET" : "TESTNET A") + (p["worker",default:""].isEmpty ? "" : " / " + p["worker"]!)
         case "started":
-            mining = true; hashrate = "Starting…"; rate.stringValue = "Building DAG…"
+            mining = true; paused = ""; hashrate = "Starting…"; rate.stringValue = "Building DAG…"
             state.stringValue = "ENGINE STARTING"; message.stringValue = "Mining continues when the window is minimized or closed."
             stop.isEnabled = true; animate()
         case "miner":
@@ -105,6 +106,11 @@ final class MenuBarController: NSObject {
             message.stringValue = [0, 15].contains(code) ? "Open the full view to start another session."
                 : (event["reason"] as? String).map { "Engine exited (\(code)): \($0)" } ?? "Engine exited (\(code)). Check the engine log."
         case "error": message.stringValue = event["message"] as? String ?? "Check the full view."
+        case "schedule":
+            guard !mining else { return }
+            paused = event["paused"] as? Bool == true ? event["reason"] as? String ?? "" : ""
+            state.stringValue = paused.isEmpty ? "MINER STOPPED" : "PAUSED BY SCHEDULE"
+            if !paused.isEmpty { message.stringValue = "Paused by schedule — \(paused). Mining resumes when the schedule allows." }
         default: break
         }
         drawStatus()
@@ -118,8 +124,8 @@ final class MenuBarController: NSObject {
         if let animation { RunLoop.main.add(animation,forMode:.common) }
     }
     private func drawStatus() {
-        item.button?.title = " " + (mining ? hashrate : "Idle")
-        item.button?.toolTip = "MMM · \(state.stringValue) · Click for compact controls"
+        item.button?.title = " " + (mining ? hashrate : paused.isEmpty ? "Idle" : "Paused")
+        item.button?.toolTip = "MMM · \(state.stringValue)" + (mining || paused.isEmpty ? "" : " — " + paused) + " · Click for compact controls"
         item.button?.image = pickaxeFrames[mining ? frame : 0]
     }
     func invalidate() { animation?.invalidate(); NSStatusBar.system.removeStatusItem(item) }

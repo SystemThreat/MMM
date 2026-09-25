@@ -1,4 +1,4 @@
-:root{--lime:#c7ff2e;--ink:#0a0a0a;--paper:#fff;--muted:#6b6b63;--line:#d9d9d2}*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:20px}body{margin:0;background:var(--paper);color:var(--ink);font:12px Menlo,Monaco,monospace}button,input,select{font:inherit;color:inherit;border-radius:0}button,a{cursor:pointer}button{border:2px solid var(--ink);background:white;padding:12px 17px;font-weight:bold}button:hover{background:var(--lime)}button:disabled{opacity:.45;cursor:default}a{color:inherit;text-decoration:none}a:hover{text-decoration:underline}header{display:flex;align-items:center;justify-content:space-between;padding:25px 36px;border-bottom:2px solid var(--ink)}.brand{display:flex;align-items:center;gap:18px;font-size:25px;letter-spacing:-1px}.brand>b{background:var(--lime);border:3px solid var(--ink);font-size:34px;padding:4px;letter-spacing:-3px}.brand span{color:#6b6b63}.edition{text-align:right;font-size:10px;line-height:1.8;letter-spacing:1px}nav{display:flex;border-bottom:2px solid var(--ink);padding:0 36px;align-items:center;gap:2px}nav a{padding:18px;font-weight:bold;font-size:11px;letter-spacing:1px}nav .selected{background:var(--ink);color:var(--lime)}nav>span{margin-left:auto;font-size:10px;font-weight:bold}main{max-width:1600px;margin:auto;padding:30px 36px}.intro{display:flex;justify-content:space-between;align-items:center;margin-bottom:22px}.eyebrow{font-size:10px;font-weight:bold;letter-spacing:1.6px}h1{font-family:Impact,'Arial Narrow',sans-serif;font-size:65px;letter-spacing:-2px;line-height:1;margin:12px 0 0;text-transform:uppercase}h1 span{color:var(--lime);-webkit-text-stroke:1px #111}.network-tag{border:2px solid;padding:10px 14px;background:var(--lime);font-weight:bold;font-size:10px}#notice{background:#f4f4ef;border-left:4px solid var(--ink);padding:12px 16px;margin:0 0 20px;font-size:11px;line-height:1.6}.hero-grid{display:grid;grid-template-columns:2.2fr 1fr;gap:20px}.hash-panel{background:var(--ink);color:white;padding:20px 24px}.panel-title{display:flex;justify-content:space-between;align-items:center;font-size:10px;font-weight:bold;letter-spacing:1px;padding:17px 20px;border-bottom:2px solid var(--ink);min-height:50px}.hash-panel .panel-title{padding:0;border:0;min-height:20px;color:var(--lime)}.rate{margin:24px 0 12px;display:flex;flex-direction:column;gap:10px}.rate strong{font-size:64px;letter-spacing:-4px;font-weight:500}.rate>span{font-size:9px;letter-spacing:2px;color:#9d9d94}#chart{height:65px;width:100%;background:repeating-linear-gradient(0deg,transparent 0 21px,#252525 22px 23px)}#chartLine{stroke:var(--lime);stroke-width:2;fill:none}.miner-footer{display:flex;justify-content:space-between;color:#aaa;font-size:9px;margin-top:15px}.control-panel{background:var(--lime);border:2px solid;padding:24px}.control-panel h2{font-family:Impact,'Arial Narrow',sans-serif;text-transform:uppercase;font-size:38px;line-height:1;letter-spacing:-1px;margin:16px 0}.payout{font-size:10px;margin-bottom:20px;display:flex;align-items:center;gap:10px}.primary{background:var(--ink);color:var(--lime);width:100%;font-size:13px}.primary:hover{background:white;color:var(--ink)}.control-panel p{font-size:9px;line-height:1.6;margin:12px 0 0}.metrics{display:grid;grid-template-columns:repeat(6,1fr);border:2px solid;margin:20px 0}.metric{padding:18px 16px;border-right:1px solid var(--line)}.metric:last-child{border:0}.metric label{font-size:9px;letter-spacing:1px;color:var(--muted);display:block}.metric strong{display:block;font-size:23px;margin-top:12px;letter-spacing:-1px}.metric small{font-size:9px;color:var(--muted);display:block;margin-top:6px}.lower{display:grid;grid-template-columns:2.2fr 1fr;gap:20px}.workspace{border:2px solid;margin-bottom:20px;min-width:0}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;text-align:left;font-size:10px}th{font-size:8px;letter-spacing:1px;background:#f4f4ef;padding:12px 18px;color:var(--muted);white-space:nowrap}td{border-top:1px solid var(--line);padding:13px 18px}td:nth-child(n+3){white-space:nowrap}.empty{color:var(--muted);padding:35px 18px}.footnote{font-size:8px;color:var(--muted);padding:12px 18px;border-top:1px solid var(--line);line-height:1.7}.person{display:flex;align-items:center;gap:10px}.person div{display:flex;flex-direction:column;gap:5px}.person small{font-size:9px;color:var(--muted)}.identicon{flex-shrink:0}.online{background:var(--lime);padding:4px 6px;font-size:8px}.offline{color:var(--muted);font-size:8px}dl{margin:0;padding:7px 18px}dl>div{display:flex;justify-content:space-between;padding:13px 0;border-bottom:1px solid var(--line);font-size:10px}dt{color:var(--muted)}dd{margin:0;font-weight:bold}.text-button{padding:0;border:0;font-size:9px}form{padding:20px;display:grid;grid-template-columns:repeat(4,1fr);gap:18px}label{font-size:9px;letter-spacing:1px}input,select{display:block;width:100%;padding:12px;background:#f4f4ef;border:1px solid #aaa;margin-top:9px;font-size:11px}.wide{grid-column:span 2}form p{font-size:9px;line-height:1.7;color:var(--muted);grid-column:span 3;margin:0}form button{align-self:end}summary{padding:17px 20px;font-weight:bold;font-size:10px;cursor:pointer}pre{background:var(--ink);color:#bbb;margin:0;padding:20px;white-space:pre-wrap;word-break:break-all;max-height:250px;overflow:auto;font-size:10px}footer{display:flex;justify-content:space-between;font-size:8px;color:var(--muted);padding:5px 0 15px;letter-spacing:.5px}:focus-visible{outline:3px solid #749900;outline-offset:3px}@media(max-width:1000px){main{padding:24px}header{padding:20px 24px}.rate strong{font-size:48px}.metrics{grid-template-columns:repeat(3,1fr)}.metric{border-bottom:1px solid var(--line)}h1{font-size:53px}.lower{grid-template-columns:1fr}.nerd dl{display:grid;grid-template-columns:1fr 1fr;gap:0 24px}}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+:root{--lime:#c7ff2e;--ink:#0a0a0a;--paper:#fff;--muted:#6b6b63;--line:#d9d9d2}*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:20px}body{margin:0;background:var(--paper);color:var(--ink);font:12px Menlo,Monaco,monospace}button,input,select{font:inherit;color:inherit;border-radius:0}button,a{cursor:pointer}button{border:2px solid var(--ink);background:white;padding:12px 17px;font-weight:bold}button:hover{background:var(--lime)}button:disabled{opacity:.45;cursor:default}a{color:inherit;text-decoration:none}a:hover{text-decoration:underline}header{display:flex;align-items:center;justify-content:space-between;padding:25px 36px;border-bottom:2px solid var(--ink)}.brand{display:flex;align-items:center;gap:18px;font-size:25px;letter-spacing:-1px}.brand>b{background:var(--lime);border:3px solid var(--ink);font-size:34px;padding:4px;letter-spacing:-3px}.brand span{color:#6b6b63}.edition{text-align:right;font-size:10px;line-height:1.8;letter-spacing:1px}nav{display:flex;border-bottom:2px solid var(--ink);padding:0 36px;align-items:center;gap:2px}nav a{padding:18px;font-weight:bold;font-size:11px;letter-spacing:1px}nav .selected{background:var(--ink);color:var(--lime)}nav>span{margin-left:auto;font-size:10px;font-weight:bold}main{max-width:1600px;margin:auto;padding:30px 36px}.intro{display:flex;justify-content:space-between;align-items:center;margin-bottom:22px}.eyebrow{font-size:10px;font-weight:bold;letter-spacing:1.6px}h1{font-family:Impact,'Arial Narrow',sans-serif;font-size:65px;letter-spacing:-2px;line-height:1;margin:12px 0 0;text-transform:uppercase}h1 span{color:var(--lime);-webkit-text-stroke:1px #111}.network-tag{border:2px solid;padding:10px 14px;background:var(--lime);font-weight:bold;font-size:10px}#notice{background:#f4f4ef;border-left:4px solid var(--ink);padding:12px 16px;margin:0 0 20px;font-size:11px;line-height:1.6}.hero-grid{display:grid;grid-template-columns:2.2fr 1fr;gap:20px}.hash-panel{background:var(--ink);color:white;padding:20px 24px}.panel-title{display:flex;justify-content:space-between;align-items:center;font-size:10px;font-weight:bold;letter-spacing:1px;padding:17px 20px;border-bottom:2px solid var(--ink);min-height:50px}.hash-panel .panel-title{padding:0;border:0;min-height:20px;color:var(--lime)}.rate{margin:24px 0 12px;display:flex;flex-direction:column;gap:10px}.rate strong{font-size:64px;letter-spacing:-4px;font-weight:500}.rate>span{font-size:9px;letter-spacing:2px;color:#9d9d94}#chart{height:65px;width:100%;background:repeating-linear-gradient(0deg,transparent 0 21px,#252525 22px 23px)}#chartLine{stroke:var(--lime);stroke-width:2;fill:none}.miner-footer{display:flex;justify-content:space-between;color:#aaa;font-size:9px;margin-top:15px}.control-panel{background:var(--lime);border:2px solid;padding:24px}.control-panel h2{font-family:Impact,'Arial Narrow',sans-serif;text-transform:uppercase;font-size:38px;line-height:1;letter-spacing:-1px;margin:16px 0}.payout{font-size:10px;margin-bottom:20px;display:flex;align-items:center;gap:10px}.primary{background:var(--ink);color:var(--lime);width:100%;font-size:13px}.primary:hover{background:white;color:var(--ink)}.control-panel p{font-size:9px;line-height:1.6;margin:12px 0 0}.metrics{display:grid;grid-template-columns:repeat(6,1fr);border:2px solid;margin:20px 0}.metric{padding:18px 16px;border-right:1px solid var(--line)}.metric:last-child{border:0}.metric label{font-size:9px;letter-spacing:1px;color:var(--muted);display:block}.metric strong{display:block;font-size:23px;margin-top:12px;letter-spacing:-1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.metric small{font-size:9px;color:var(--muted);display:block;margin-top:6px}.lower{display:grid;grid-template-columns:2.2fr 1fr;gap:20px}.workspace{border:2px solid;margin-bottom:20px;min-width:0}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;text-align:left;font-size:10px}th{font-size:8px;letter-spacing:1px;background:#f4f4ef;padding:12px 18px;color:var(--muted);white-space:nowrap}td{border-top:1px solid var(--line);padding:13px 18px}td:nth-child(n+3){white-space:nowrap}.empty{color:var(--muted);padding:35px 18px}.footnote{font-size:8px;color:var(--muted);padding:12px 18px;border-top:1px solid var(--line);line-height:1.7}.person{display:flex;align-items:center;gap:10px}.person div{display:flex;flex-direction:column;gap:5px}.person small{font-size:9px;color:var(--muted)}.identicon{flex-shrink:0}.online{background:var(--lime);padding:4px 6px;font-size:8px}.offline{color:var(--muted);font-size:8px}dl{margin:0;padding:7px 18px}dl>div{display:flex;justify-content:space-between;padding:13px 0;border-bottom:1px solid var(--line);font-size:10px}dt{color:var(--muted)}dd{margin:0;font-weight:bold}.text-button{padding:0;border:0;font-size:9px}form{padding:20px;display:grid;grid-template-columns:repeat(4,1fr);gap:18px}label{font-size:9px;letter-spacing:1px}input,select{display:block;width:100%;padding:12px;background:#f4f4ef;border:1px solid #aaa;margin-top:9px;font-size:11px}.wide{grid-column:span 2}form p{font-size:9px;line-height:1.7;color:var(--muted);grid-column:span 3;margin:0}form button{align-self:end}summary{padding:17px 20px;font-weight:bold;font-size:10px;cursor:pointer}pre{background:var(--ink);color:#bbb;margin:0;padding:20px;white-space:pre-wrap;word-break:break-all;max-height:250px;overflow:auto;font-size:10px}footer{display:flex;justify-content:space-between;font-size:8px;color:var(--muted);padding:5px 0 15px;letter-spacing:.5px}:focus-visible{outline:3px solid #5a7700;outline-offset:3px}@media(max-width:1000px){main{padding:24px}header{padding:20px 24px}.rate strong{font-size:48px}.metrics{grid-template-columns:repeat(3,1fr)}.metric{border-bottom:1px solid var(--line)}h1{font-size:53px}.lower{grid-template-columns:1fr}.nerd dl{display:grid;grid-template-columns:1fr 1fr;gap:0 24px}}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
 
 .brand>b{background:#0a0a0a;color:var(--lime);border-color:var(--lime);border-radius:12px;font-size:24px;letter-spacing:-2px;padding:13px 6px}
 /* Four fixed-height views. Lists use pagination rather than page scrolling. */
@@ -21,11 +21,16 @@ body{font-size:16px;letter-spacing:.035em}.brand{font-size:28px;letter-spacing:.
 
 /* WALLET tab — viewport-fit: header and actions pinned, balances scroll inside */
 #view-wallet .workspace{flex:1;min-height:0;display:flex;flex-direction:column;margin-bottom:0}
-.wallet-balances{flex:1;min-height:48px;overflow-y:auto;padding:0 16px;margin:0}
-.wallet-row{display:grid;grid-template-columns:minmax(150px,210px) 1fr auto auto;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--line)}
-.wallet-row label{font-size:9px;font-weight:bold;letter-spacing:1px;color:var(--muted)}
-.wallet-row strong{font-size:15px;white-space:nowrap}
-.wallet-row small{color:var(--muted);white-space:nowrap}
+/* after a send the receipt takes its room first; short of room it gives way (and scrolls, with a visible bar)
+   down to 45 px, its heading and the MORE bar, while the balances keep one whole row (a two-line row is
+   70–77 px). Only when even that does not fit does the list go below one row. --wa-rest: the actions'
+   height without the receipt (the send form, paddings, gap, border) */
+.wallet-balances{flex:1;min-height:min(78px,max(44px,calc(100cqh - var(--wa-rest) - 45px)));overflow-y:auto;padding:0 16px;margin:0}
+.wallet-row{display:grid;grid-template-columns:minmax(300px,1fr) auto;grid-template-areas:"lbl amt" "who note";column-gap:16px;row-gap:3px;padding:8px 0;border-bottom:1px solid var(--line)}
+.wallet-row>label{grid-area:lbl;align-self:end;min-width:0;font-size:9px;font-weight:bold;letter-spacing:1px;color:var(--muted)}
+.wallet-row>.person{grid-area:who;align-self:center}.wallet-row .person>span:first-child{display:flex}
+.wallet-row>strong{grid-area:amt;justify-self:end;align-self:end;font-size:15px;line-height:1.2;white-space:nowrap}
+.wallet-row>small{grid-area:note;justify-self:end;align-self:center;text-align:right;line-height:1.3;color:var(--muted)}
 .wallet-row small button{margin-left:6px}
 .wallet-actions{border-top:2px solid var(--ink);padding:10px 16px;display:flex;flex-direction:column;gap:6px;min-height:0}
 .wallet-actions form{display:flex;align-items:end;gap:12px;flex-wrap:wrap;margin:0}
@@ -33,7 +38,6 @@ body{font-size:16px;letter-spacing:.035em}.brand{font-size:28px;letter-spacing:.
 .wallet-actions label.wide{flex:1;min-width:220px}
 .wallet-actions input{border:2px solid var(--ink);padding:8px 10px;background:var(--paper);font-size:11px;width:100%}
 .wallet-actions button[type=submit]{padding:9px 14px;white-space:nowrap}
-/* the receipt grows to fit; short of room it gives way first and scrolls, with a visible bar */
 .wallet-foot{display:flex;align-items:center;gap:14px;min-height:16px;flex:0 1 auto}
 .wallet-note{font-size:10px;color:var(--muted);line-height:1.45;margin:0;flex:1}
 .wallet-receipt{padding:7px 12px;border:2px solid var(--ink);background:var(--lime);color:#101600;font-size:11px;display:flex;flex-direction:column;gap:4px;max-width:64%;max-height:100%;min-height:0;overflow-y:auto;align-self:stretch}
@@ -91,8 +95,9 @@ body{font-size:16px;letter-spacing:.035em}.brand{font-size:28px;letter-spacing:.
 @media (max-width:900px){.wallet-head{grid-template-columns:minmax(0,1fr) 96px 130px}.wh-watch{grid-column:1/-1}}
 /* SETUP: NUKE reset button in the panel title */
 .setup-tools{display:flex;align-items:center;gap:18px}
-#nukeBtn{border:2px solid #d9412b;color:#d9412b;background:transparent;padding:6px 12px;font-size:10px;font-weight:bold;letter-spacing:.08em;min-height:0}
-#nukeBtn:hover{background:#d9412b;color:#fff}
+#nukeBtn{border:2px solid #c43a26;color:#c43a26;background:transparent;padding:6px 12px;font-size:10px;font-weight:bold;letter-spacing:.08em;min-height:0}
+#nukeBtn:hover{background:#c43a26;color:#fff}
+[data-theme=dark] #nukeBtn{border-color:#ef5a45;color:#ef5a45}[data-theme=dark] #nukeBtn:hover{background:#ef5a45;color:#10110e}
 /* copy-address button, shown wherever an address is rendered */
 .copy-btn{border:1px solid var(--line);background:transparent;color:var(--muted);font-size:9px;font-weight:bold;letter-spacing:.08em;padding:2px 6px;margin-left:8px;min-height:0;cursor:pointer;vertical-align:middle}
 .copy-btn:hover{border-color:var(--ink);color:var(--ink);background:var(--lime)}
@@ -134,3 +139,119 @@ body{font-size:16px;letter-spacing:.035em}.brand{font-size:28px;letter-spacing:.
 .card-banner.static .cb-strip+.cb-strip,.card-banner.static .cb-strip>:not(:first-child){display:none}
 @media(prefers-reduced-motion:reduce){.cb-track{animation:none;display:block;overflow:hidden;text-overflow:ellipsis}.cb-strip+.cb-strip,.cb-strip>:not(:first-child){display:none}.cb-light{animation:none}.cb-ticker{white-space:normal;font-size:17px;line-height:1.2;max-height:44px}}
 
+/* Dashboard: the schedule's reason in the engine status; MINE ANYWAY under START */
+.hash-panel{min-width:0}.hash-panel .panel-title{gap:12px}.hash-panel .panel-title>span:first-child{flex:none}#engineStatus{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sched-offer{display:flex;flex-direction:column;gap:6px;font-size:12px;font-weight:bold;letter-spacing:.03em;line-height:1.3}
+.sched-offer[hidden],#actionNote[hidden]{display:none}
+.so-btns{display:flex;align-items:center;gap:14px}
+.sched-offer button{padding:6px 12px;font-size:13px;min-height:0;letter-spacing:.06em}
+.sched-offer small{font-size:11px;font-weight:normal;letter-spacing:.02em}
+/* the lime panel follows the hero's own height (a size container), not only the window's: a two-line notice
+   or a window just over a breakpoint never pushes its content out. The MINE ANYWAY offer or the held note
+   takes the title's place at every size; the offer's footnote goes first when the hero is short. */
+.hero-grid{container-type:size}
+.control-panel:has(#schedOffer:not([hidden])) :is(.eyebrow,h2),.control-panel:has(#actionNote.held:not([hidden])) :is(.eyebrow,h2){display:none}
+@container (max-height:250px){.control-panel .eyebrow{display:none}}
+@container (max-height:228px){.sched-offer small{display:none}}
+@media(min-height:781px){@container (max-height:225px){.control-panel h2{font-size:26px}}}@container (max-height:190px){.control-panel h2{display:none}}
+/* the tagline over MINE DIFFERENT only where the intro has room for both lines (it was cut off above 780 px) */
+@media(max-height:900px){.intro .eyebrow{display:none}}@media(min-height:901px){.intro{height:auto}}
+.sched-offer .text-button{padding:0;border:0;background:transparent;text-decoration:underline}
+[data-theme=dark] .sched-offer{color:#0a0a0a}
+[data-theme=dark] .sched-offer button{background:#0a0a0a;color:var(--lime);border-color:#0a0a0a}
+[data-theme=dark] .sched-offer .text-button{background:transparent;color:#0a0a0a}
+/* WALLET: backup badge in the header; RECEIVE panel floats over balances and actions */
+#walletPanel>.panel-title{gap:12px}#walletPanel>.panel-title>span:first-child{flex:none;white-space:nowrap}
+#walletPanel:has(#walletBackup.note:not([hidden])) .wt-long{display:none}
+.wallet-state{flex:0 1 auto;min-width:0;justify-content:flex-end}.wallet-state>*{flex:none}
+.backup-badge{font-size:11px;font-weight:bold;letter-spacing:.06em;padding:3px 8px;border:2px solid;white-space:nowrap;cursor:default}
+.backup-badge.ok{background:var(--lime);color:#101600;border-color:#101600}
+.backup-badge.warn{background:#ffe0d9;color:#8c1d0e;border-color:#d9412b}
+.backup-badge.note{flex:0 1 auto;min-width:0;padding:2px 7px;border-style:dashed;color:var(--muted);font-size:10px;font-weight:normal;letter-spacing:.02em;line-height:1.25;white-space:normal}
+[data-theme=dark] .backup-badge.ok{border-color:#89ad28}
+[data-theme=dark] .backup-badge.warn{background:#3a130b;color:#ffb3a3}
+.wallet-body{flex:1;min-height:0;display:flex;flex-direction:column;position:relative;container-type:size;--wa-rest:113px}
+@media(max-height:680px){.wallet-head{padding-top:8px;padding-bottom:8px}.wallet-actions{padding-top:6px;padding-bottom:6px;gap:4px}.wallet-actions form{padding-top:5px;padding-bottom:5px}.wallet-body{--wa-rest:93px}}
+.wallet-receive{position:absolute;top:8px;left:16px;right:16px;max-height:calc(100% - 16px);overflow:auto;z-index:5;display:flex;gap:18px;align-items:flex-start;padding:12px 14px;background:var(--paper);border:3px solid var(--ink);box-shadow:0 8px 22px rgba(0,0,0,.28)}
+[data-theme=dark] .wallet-receive{border-color:var(--lime);box-shadow:0 8px 22px rgba(0,0,0,.6)}
+.rv-qr{flex:none;background:#fff;line-height:0;min-width:180px;min-height:180px}
+.rv-qr img{display:block;width:180px;height:180px;image-rendering:pixelated}
+.rv-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px}
+.rv-top{display:flex;justify-content:space-between;align-items:center;font-size:12px;letter-spacing:.08em}
+.rv-info label{display:flex;flex-direction:column;gap:4px;font-size:9px;font-weight:bold;letter-spacing:1px}
+.rv-info input{border:2px solid var(--ink);padding:6px 10px;background:var(--paper);font-size:13px;min-height:0;margin:0;max-width:260px}
+.rv-k{font-size:9px;font-weight:bold;letter-spacing:1px;color:var(--muted)}
+.rv-line{display:flex;align-items:flex-start;gap:8px;min-width:0}
+.rv-line code{flex:1;min-width:0;font-size:12px;line-height:1.4;overflow-wrap:anywhere;user-select:all}
+.rv-line .copy-btn{flex:none;margin:0}
+.rv-note{margin:0;font-size:11px;color:var(--muted);line-height:1.4}
+.rv-note.err{color:#b3261e;font-weight:bold}
+[data-theme=dark] .rv-note.err{color:#ff8f7a}
+@media(max-width:1100px){.wt-long{display:none}}
+/* NEW WALLET: the backup-card prompt after a card wallet is created */
+.backup-prompt{display:flex;flex-direction:column;align-items:flex-start;gap:10px;padding:12px 14px;border:3px solid #d9412b;background:#ffe0d9;color:#3a0a02}
+.create-intro:has(>.backup-prompt:not([hidden]))>p{display:none}
+.backup-prompt b{font-size:16px;letter-spacing:.02em;line-height:1.35}
+#bpName{font-size:12px;font-weight:bold;color:#8c1d0e}
+.bp-btns{display:flex;align-items:center;gap:14px}
+.backup-prompt button{padding:8px 14px;font-size:13px}
+.backup-prompt .text-button{padding:0;border:0;background:transparent;text-decoration:underline}
+.backup-prompt .text-button:hover,[data-theme=dark] .backup-prompt .text-button:hover{background:transparent}
+[data-theme=dark] .backup-prompt{background:#3a130b;color:#ffd9cf}
+[data-theme=dark] #bpName{color:#ffb3a3}
+[data-theme=dark] .backup-prompt .text-button{color:#ffd9cf}
+/* FORUM tab: sign-in beside the identity */
+#view-forum [hidden]{display:none!important}
+#view-forum .workspace{flex:1;min-height:0;overflow:auto}
+.forum-body{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.forum-col{padding:14px 18px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.forum-col+.forum-col{border-left:2px solid var(--line)}
+.fc-head{display:flex;align-items:baseline;gap:10px;font-size:12px;font-weight:bold;letter-spacing:.08em}
+.fc-head em{margin-left:auto;font-style:normal;font-weight:normal;color:var(--muted);font-size:11px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#loginForm{display:flex;flex-direction:column;gap:10px;padding:0}
+#loginForm button[type=submit],.fid>button{align-self:flex-start}
+#loginForm p{font-size:12px}
+.fid-box{display:flex;align-items:center;gap:12px;padding:10px 12px;border:2px solid var(--ink);background:var(--lime);color:#101600}
+.fid-box .rv-line{flex:1}
+.fid-box code{font-size:13px;font-weight:bold}
+.fid-mark .identicon{display:block;width:48px;height:48px}
+.fid-box .copy-btn{color:#101600;border-color:#101600}
+[data-theme=dark] .fid-box{border-color:#89ad28}
+[data-theme=dark] .fid-box .copy-btn{background:transparent;color:#101600;border-color:#101600}
+[data-theme=dark] .fid-box .copy-btn.done,[data-theme=dark] .fid-box .copy-btn:hover{background:#101600;color:var(--lime)}
+.fid-note,.fid-last{margin:0;font-size:12px;line-height:1.45;color:var(--muted)}
+.fid-last{color:var(--ink);font-weight:bold;letter-spacing:.04em}
+/* SETUP: the mining schedule under the setup form — one heading line (with the verdict), one row of controls */
+#settings p{grid-column:span 1;align-self:end}
+.schedule{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;padding:8px 16px 10px;border-top:1px solid var(--line)}
+.sch-head{flex:1 0 100%;display:flex;align-items:baseline;gap:12px;min-width:0}
+.sch-head label{flex:none}
+.sch-head em{min-width:0;font-style:normal;font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.schedule select,.schedule input:not([type=checkbox]){font-size:15px;margin:0;width:auto}
+.schedule select{flex:0 1 250px}
+.sch-idle,.sch-hours{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:bold;letter-spacing:.06em;color:var(--muted)}
+.sch-idle input{width:84px}.sch-hours input{width:124px}
+.schedule:not([data-mode=idle]) .sch-idle,.schedule:not([data-mode=hours]) .sch-hours{display:none}
+/* seven tabs: one line down to the 940 px minimum */
+nav a{white-space:nowrap}@media(max-width:1060px){nav a{padding-left:13px;padding-right:13px}}
+/* SETUP: the engine log stays a dark terminal in the dark theme too (was light-on-light) */
+[data-theme=dark] .engine-log pre{background:#070904;color:#cfd3c4}
+/* a send the network refused: nothing went out, said with certainty; its words wrap, never cut */
+.wallet-receipt.refused{color:#3a0a02}
+.wallet-receipt.refused .wr-head{white-space:normal}
+[data-theme=dark] .wallet-receipt.refused{color:#3a0a02;border-color:#d9412b}
+.wr-refused{font-weight:bold;letter-spacing:.04em}
+/* the reader hint takes turns with the tap words when nothing scrolls */
+@media(prefers-reduced-motion:reduce){.card-banner.alt .cb-strip>:first-child{display:none}.card-banner.alt .cb-strip>:nth-child(3){display:inline}}
+/* SETUP at the smallest window (612 px of page): a tighter form so the engine log keeps a line, even under a two-line notice */
+@media(max-height:640px){#settings{gap:5px 14px;padding:8px 14px}#settings input,#settings select{min-height:36px;padding:5px 8px;margin-top:3px}#settings button{min-height:36px;padding:6px 10px}.schedule{padding:6px 16px 8px;gap:4px 14px}.schedule select,.schedule input:not([type=checkbox]){min-height:36px;padding:5px 8px}.engine-log{min-height:52px}}
+::placeholder{color:var(--muted);opacity:1}
+/* the dashboard heading and network tag are taller than the 34 px intro of windows up to 780 px: top-aligned, the extra falls
+   into the gap below instead of being cut off at the view's top edge */
+@media(max-height:780px){.intro{align-items:flex-start}.intro h1{margin-top:3px}}
+/* the engine log wraps long lines (renderLog drops the oldest lines so the latest stay in view); COPY LOG has the whole text */
+.engine-log pre{white-space:pre-wrap;word-break:normal;overflow-wrap:anywhere}
+/* a short window with a send receipt under a long backup note: the note's smaller type keeps the balances a whole row */
+@media(max-height:680px){#walletPanel:has(#walletReceipt:not([hidden])) .backup-badge.note{font-size:9px;line-height:1.2;letter-spacing:0}}
+/* while the card banner overlays the top of the view, a scrolled view keeps a focused control below it */
+main:has(#cardBanner:not([hidden])) :is(#view-setup,#view-create .workspace,#view-forum .workspace){scroll-padding-top:72px}

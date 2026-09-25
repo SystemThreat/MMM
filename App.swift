@@ -16,6 +16,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     var menuBar: MenuBarController!
     var busy = false
     var launching = false
+    var statsPort = 47476   // the engine's stats server (a test harness picks its own, never this one)
     var generation = 0
     var profile: [String: String] = ["network":"testnet", "explorer":"https://superknet.com", "host":"", "port":"", "address":"", "worker":"", "mode":"solo"]
     var lastStats: [String: Any] = [:]
@@ -27,6 +28,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     func applicationDidFinishLaunching(_ notification: Notification) {
         UserDefaults.standard.register(defaults:["autoStartMining":true])
         if let saved = UserDefaults.standard.dictionary(forKey: "profile") as? [String: String] { profile.merge(saved) { _, new in new } }
+        schedule = (UserDefaults.standard.dictionary(forKey: "miningSchedule")).flatMap(MiningSchedule.init) ?? MiningSchedule()
         WalletService.reapOrphans()
         catchQuits()
         lastSendAtLaunch()
@@ -45,12 +47,13 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         window.center(); window.makeKeyAndOrderFront(nil)
         makeMenus()
         loadPage()
+        scheduleBegin()
         NSApp.activate(ignoringOtherApps: true)
     }
     func makeMenus() {
         menuBar = MenuBarController()
         menuBar.onShow = { [weak self] in self?.showFullWindow() }
-        menuBar.onStop = { [weak self] in self?.process?.terminate() }
+        menuBar.onStop = { [weak self] in self?.manualStop() }
         menuBar.onQuit = { [weak self] in self?.quit(nil) }
         let menu = NSMenu(); let item = NSMenuItem(); menu.addItem(item)
         let appMenu = NSMenu(); appMenu.addItem(withTitle: "Quit MMM", action: #selector(quit(_:)), keyEquivalent: "q").target = self; item.submenu = appMenu
@@ -99,6 +102,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         emit(["type":"profile", "data":profile])
         emit(["type":"autoStartPreference","enabled":UserDefaults.standard.bool(forKey:"autoStartMining")])
         emit(["type":"forumCred","saved":ForumCredential.exists()])
+        emit(forumState(), menu: false)
+        scheduleEmit(force: true)
         if let last = lastSendShown { emitLastSend(last) }
         statsTimer?.invalidate()
         statsTimer = Timer.scheduledTimer(withTimeInterval:2,repeats:true) { [weak self] _ in Task { @MainActor in self?.refreshMiner() } }
@@ -132,21 +137,29 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     }
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.frameInfo.isMainFrame, isPage(message.frameInfo.request.url), let b = message.body as? [String:Any], let action = b["action"] as? String else { return }
-        guard !quitPending || ["copy", "open", "refresh", "walletRefresh", "walletCancel"].contains(action) else { return }   // quitting: nothing new starts
+        guard !quitPending || ["copy", "open", "refresh", "walletRefresh", "walletCancel", "forumRefresh"].contains(action) else { return }   // quitting: nothing new starts
         switch action {
         case "save": saveSetup(b)
         case "autoStartPreference":
             guard let enabled = b["enabled"] as? Bool else { return }
             UserDefaults.standard.set(enabled,forKey:"autoStartMining")
             emit(["type":"autoStartPreference","enabled":enabled])
-        case "start": Task { await start() }
+        case "start": Task { await start(user: true) }
         case "login": forumLogin(passphrase: b["passphrase"] as? String ?? "", remember: b["remember"] as? Bool ?? false)
         case "loginTouch": loginTouch()
         case "loginForget":
             ForumCredential.forget()
             emit(["type": "forumCred", "saved": false])
             emit(["type": "loginStatus", "state": "idle", "message": "Saved passphrase removed. Type it to sign in."])
-        case "stop": process?.terminate()
+        case "stop": manualStop()
+        case "mineAnyway": mineAnyway()
+        case "scheduleStay": schedulePaused = false; scheduleEmit(force: true)
+        case "schedule": scheduleSave(b)
+        case "forumRefresh": emit(forumState(), menu: false)
+        case "forumIdentity": forumIdentity(passphrase: b["passphrase"] as? String ?? "")
+        case "openForum": NSWorkspace.shared.open(forumURL)
+        case "walletQR": walletQR(b)
+        case "walletBackup": if let f = b["file"] as? String { walletBackup(file: f) }
         case "walletRefresh": walletRefresh()
         case "walletUnlock": walletUnlock(passphrase: b["passphrase"] as? String ?? "", remember: b["remember"] as? Bool ?? false)
         case "walletSelect": if let f = b["file"] as? String { walletSelect(file: f, index: b["index"] as? Int) }
@@ -186,7 +199,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         password = submittedPassword
         profile.merge(p) { _, new in new }; generation += 1; lastStats = [:]
         UserDefaults.standard.set(profile, forKey:"profile"); emit(["type":"reset"]); menuBar.update(["type":"profile","data":profile]); refresh()
-        if b["startAfterSave"] as? Bool == true { Task { await start() } }
+        if b["startAfterSave"] as? Bool == true { Task { await start(user: true) } }
     }
     /// The page's explorer link. A receipt names the explorer its send used: only the
     /// configured one, or one a send (or the last session's) used, is taken.
@@ -226,15 +239,21 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             } catch { if generation == revision { lastStats = [:]; emit(["type":"offline","message":error.localizedDescription]) } }
         }
     }
-    @MainActor func start() async {
-        guard process == nil, !launching else { return }
+    /// Every engine start: auto-start, a schedule resume, START (`user`), MINE ANYWAY. While the
+    /// schedule holds mining (and MINE ANYWAY did not override that hold) it is held, not started.
+    @MainActor func start(user: Bool = false) async {
+        guard process == nil, !launching, !quitPending else { return }   // quitting: a committed send or card write is finishing
+        if let hold = scheduleHoldNow(), scheduleOverride != hold.code {
+            schedulePaused = true; scheduleReason = hold.reason
+            scheduleEmit(event: user ? "blocked" : "paused"); return
+        }
         launching = true; defer { launching = false }
         let p = profile, address = p["address",default:""]
         let isTest = p["network"] == "testnet"
         guard validAddress(address, hrp:isTest ? "txa" : "xpa") else { emit(["type":"error","message":"Enter a valid witness v3 \(isTest ? "txa1r" : "xpa1r") payout address with a correct bech32m checksum."]); return }
         let host = p["host",default:""]
         guard !host.isEmpty, host.range(of: "^[a-zA-Z0-9.-]+$", options: .regularExpression) != nil, let port = UInt16(p["port",default:""]), port > 0, !p["worker",default:""].isEmpty else { emit(["type":"error","message":"Enter an IP address or hostname, port (1–65535), and worker name."]); return }
-        var args = [address,"--pool",host + ":" + String(port),"--worker",p["worker",default:""],"--mode",p["mode"] == "shared" ? "shared":"solo","--stats-port","47476"]
+        var args = [address,"--pool",host + ":" + String(port),"--worker",p["worker",default:""],"--mode",p["mode"] == "shared" ? "shared":"solo","--stats-port",String(statsPort)]
         if !isTest {
             do {
                 let stats = try await get(p["explorer",default:""] + "/api/stats")
@@ -244,10 +263,13 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                 args += ["--base",String(time)]
             } catch { emit(["type":"error","message":error.localizedDescription]); return }
         }
-        guard process == nil, profile == p else { return }
-        if (try? await get("http://127.0.0.1:47476/health", local:true)) != nil { emit(["type":"error","message":"MMM stats port 47476 is already in use. Stop the other MMM session first."]); return }
-        guard process == nil, profile == p else { return }
-        let task = Process(); task.executableURL = Bundle.main.url(forResource:"NerdMiner",withExtension:nil); task.arguments = args
+        // each wait above and below is a chance for a quit to have begun (a committed send finishing): launch nothing then
+        guard process == nil, profile == p, !quitPending else { return }
+        if (try? await get("http://127.0.0.1:\(statsPort)/health", local:true)) != nil { emit(["type":"error","message":"MMM stats port \(statsPort) is already in use. Stop the other MMM session first."]); return }
+        guard process == nil, profile == p, !quitPending else { return }
+        // a bundle without its engine: say so (a Process with no launch path would raise and end MMM)
+        guard let engine = Bundle.main.url(forResource:"NerdMiner",withExtension:nil) else { emit(["type":"error","message":"The mining engine is missing from MMM.app. Reinstall MMM, then start again."]); return }
+        let task = Process(); task.executableURL = engine; task.arguments = args
         let input = Pipe(); task.standardInput = input
         args += ["--password-stdin"]; task.arguments = args
         let pipe = Pipe(); task.standardOutput = pipe; task.standardError = pipe
@@ -266,6 +288,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                 var stopped: [String: Any] = ["type":"stopped","code":task.terminationStatus]
                 if let reason = lines.lastError { stopped["reason"] = reason }
                 self?.emit(stopped)
+                self?.scheduleEngineEnded()
             }
         }
         do { try task.run(); input.fileHandleForWriting.write(Data((password + "\n").utf8)); try? input.fileHandleForWriting.close(); process = task; miningActivity = ProcessInfo.processInfo.beginActivity(options:[.userInitiated,.idleSystemSleepDisabled],reason:"MMM background mining"); emit(["type":"started"]); refreshMiner(); refresh() }
@@ -285,7 +308,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         alert.alertStyle = .warning
         alert.messageText = "Reset MMM to a fresh start?"
         alert.informativeText = """
-        Clears: the saved wallet passphrase (Touch ID), wallet file and key-index selections, custom wallet paths, watched addresses, the mining setup (payout address, pool, worker), the saved pool password, and the auto-start choice.
+        Clears: the saved wallet passphrase (Touch ID), wallet file and key-index selections, custom wallet paths, watched addresses, the mining setup (payout address, pool, worker), the mining schedule, the saved pool password, the auto-start choice, and the remembered forum identity and sign-in time.
 
         Not touched: your wallet files in ~/.xcoin and ~/.dex-wallet, and your coins. Nothing on-chain changes.
         """
@@ -303,17 +326,21 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         for key in ["profile", "autoStartMining", "walletFile", "walletIndexByFile", "walletAddrByFile",
                     "walletAddrByFile2", "walletCarriedByFile2",
                     "walletPassByFile", "walletCustomPaths", "walletWatched",
+                    "miningSchedule", "forumIdByFile", "forumLastSignIn",
                     "walletAddress", "walletHasPassphrase"] {          // last two: keys from earlier builds
             UserDefaults.standard.removeObject(forKey: key)
         }
         profile = ["network":"testnet", "explorer":"https://superknet.com", "host":"", "port":"", "address":"", "worker":"", "mode":"solo"]
         password = ""; generation += 1; lastStats = [:]
+        schedule = MiningSchedule(); schedulePaused = false; scheduleOverride = nil; cardStatusCache = [:]
         emit(["type": "reset"])
         emit(["type": "nuked"])
         emit(["type": "profile", "data": profile])
         emit(["type": "credential", "password": ""])
         emit(["type": "forumCred", "saved": false])
         emit(["type": "loginStatus", "state": "idle"])
+        emit(forumState(), menu: false)
+        scheduleEmit(force: true)
         emit(["type": "autoStartPreference", "enabled": UserDefaults.standard.bool(forKey: "autoStartMining")])
         menuBar.update(["type": "profile", "data": profile])
         refresh()
@@ -427,6 +454,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                 "needsPassphraseEntry": hasPass && !credUsable,
                 "credSaved": ForumCredential.exists(),
                 "watched": (UserDefaults.standard.stringArray(forKey: "walletWatched") ?? []).filter { $0.hasPrefix(walletHrp() + "1") },
+                "backup": backupState(sel),
                 "cliFound": WalletService.cliPath() != nil]
     }
     var walletGen = 0
@@ -445,6 +473,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         walletGen += 1
         let gen = walletGen
         var state = walletState()
+        let sel = selectedWallet()
+        if let sel { cardStatusRefresh(sel) }
         let origin = profile["explorer"] ?? ""
         Task { @MainActor in
             var balances: [String: Any] = [:]
@@ -475,6 +505,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             }
             guard gen == walletGen else { return }   // a newer refresh (other file, NUKE…) superseded this one
             state["balances"] = balances
+            state["backup"] = backupState(sel)   // card-status may have answered while the explorer did
             walletSpendable = balances.compactMapValues { ($0 as? [String: Any])?["spendable_sats"] as? Int }
             emit(["type": "wallet", "data": state])
         }
@@ -519,14 +550,16 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     var walletTxTotal = 0
     var walletCommitted = false                // broadcast-begin seen: no CANCEL from here
     var walletCancelling = false               // CANCEL stopped the CLI; its exit reports
+    var walletWritten = false                  // a card read after card-provisioning: the card write finished
     var walletSpendable: [String: Int] = [:]   // address → spendable sats (carried included), last refresh
     var walletCardSeen = false                 // this action waited for or read a card
     var walletSendFrom = (address: "", explorer: "")
+    var walletRejected: (i: Int, n: Int, reason: String)?   // the network ANSWERED no to transaction i of n (XCOIN-EVENT rejected)
     var explorersUsed = Set<String>()          // explorers sends used (or the last session's did): receipt links may open them
     var quitReply: (() -> Void)?               // a quit waiting for the committed send to be reported
     var quitPending = false                    // set with quitReply, never cleared: MMM is quitting
     var lastSendShown: [String: Any]?          // the last session's send, reported at page load until a new send starts
-    /// A send past broadcast-begin that is not reported yet (its exit may still be queued).
+    /// A send past broadcast-begin (or a backup card past card-provisioning) not reported yet (its exit may still be queued).
     var sendCommitted: Bool { walletBusy && (walletCommitted || walletJob?.isCommitted == true) }
     /// Touch ID of one caller. Sign-in and sends each have their own, so one's prompt
     /// never drops or dismisses the other's pending approval.
@@ -542,11 +575,12 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     /// A card action may take the CLI's card-wait budget plus 90 s, then it is stopped (never after broadcast-begin).
     var cardTimeout: TimeInterval { TimeInterval(cardWaitBudget(ProcessInfo.processInfo.environment) + 90) }
     func walletBegin() -> Int {
-        walletBusy = true; walletOp += 1; walletJob = nil; walletSentIds = []; walletTxTotal = 0; walletCommitted = false; walletCancelling = false; walletCardSeen = false
+        walletBusy = true; walletOp += 1; walletJob = nil; walletSentIds = []; walletTxTotal = 0; walletCommitted = false; walletCancelling = false; walletCardSeen = false; walletRejected = nil
+        walletBackingUp = false; walletSwapSeen = false; walletNewCard = false; walletWritten = false
         return walletOp
     }
     /// Every wallet action ends here: not busy, no child, the banner closed as `phase`.
-    func walletFinish(_ phase: String) { walletBusy = false; walletJob = nil; emit(["type": "cardPrompt", "phase": phase]) }
+    func walletFinish(_ phase: String, _ extra: [String: Any] = [:]) { walletBusy = false; walletJob = nil; emit(["type": "cardPrompt", "phase": phase].merging(extra) { $1 }) }
     func walletFail(_ message: String) { walletFinish("failed"); emit(["type": "walletStatus", "state": "fail", "message": message]) }
     func walletCancelled(_ message: String = "Cancelled.") { walletFinish("cancelled"); emit(["type": "walletStatus", "state": "fail", "message": message]) }
     func cliFailure(_ r: WalletService.CLIResult, _ fallback: String) -> String {
@@ -556,16 +590,43 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     /// A stderr line of action `op`: XCOIN-EVENT lines drive the page's banner. Read until
     /// the CLI exits, CANCEL or not: a broadcast it reports is part of the final report.
     func walletProgress(_ line: String, op: Int) {
-        guard op == walletOp, walletBusy, let e = cliEvent(line) else { return }
+        guard op == walletOp, walletBusy else { return }
+        if let r = cliRejected(line) { walletRejected = r; return }   // certain: refused, not lost; the exit reports it
+        guard let e = cliEvent(line, budget: cardWaitBudget(ProcessInfo.processInfo.environment)) else { return }
         var prompt = e.prompt
-        let phase = prompt["phase"] as? String, broadcasting = phase == "broadcasting"
+        if walletBackingUp || walletNewCard { prompt = backupPrompt(prompt) }
+        let phase = prompt["phase"] as? String, locks = phase == "broadcasting" || phase == "provisioning"   // from here CANCEL is refused
         if let n = prompt["n"] as? Int { walletTxTotal = max(walletTxTotal, n) }
-        if phase == "tap" || prompt["cardRead"] != nil { walletCardSeen = true }
+        if phase == "tap" || phase == "retry" || prompt["cardRead"] != nil { walletCardSeen = true }
+        if phase == "retry" { walletJob?.extend(by: TimeInterval(cardWaitBudget(ProcessInfo.processInfo.environment))) }   // the CLI waits for the card again, a whole budget
         if phase == "signing", prompt["i"] != nil, walletCardSeen { prompt["card"] = true }   // "keep the card on the reader" only after a card wait
-        if broadcasting, !walletCommitted { walletCommitted = true; walletSendNote(["committed": true]) }
+        if locks, !walletCommitted { walletCommitted = true; if !walletBackingUp, !walletNewCard { walletSendNote(["committed": true]) } }
         if let t = e.txid, !walletSentIds.contains(t) { walletSentIds.append(t); walletSendNote(["txids": walletSentIds]) }
-        if broadcasting, quitPending { prompt["quitting"] = true }
-        if !walletCancelling || broadcasting { emit(prompt) }   // after CANCEL only a broadcast still shows
+        if locks, quitPending { prompt["quitting"] = true }
+        if !walletCancelling || locks { emit(prompt) }   // after CANCEL only a broadcast (or a card write) still shows
+    }
+    /// A card write's events on the banner (a backup card, or a new card wallet's card): after
+    /// card-swap, or for a new wallet, a tap is for a blank card; from card-provisioning on every
+    /// prompt is the write, CANCEL locked until the end. A card read after it: the write is done.
+    func backupPrompt(_ p: [String: Any]) -> [String: Any] {
+        let phase = p["phase"] as? String
+        if phase == "swap" { walletSwapSeen = true }
+        if walletCommitted || phase == "provisioning" {
+            if walletCommitted, p["cardRead"] != nil { walletWritten = true }
+            return ["type": "cardPrompt", "phase": "provisioning", "written": walletWritten, "new": walletNewCard]
+        }
+        var q = p
+        if phase == "tap", walletSwapSeen || walletNewCard { q["blank"] = true }
+        return q
+    }
+    /// A card write that stopped with SIGTERM before any card read after card-provisioning died in
+    /// the CLI's pause: from the pause's end until the write is done the CLI ignores SIGTERM (only
+    /// SIGKILL stops it there), so the card was never written.
+    func cardWriteUnstarted(_ r: WalletService.CLIResult) -> Bool { walletCommitted && !walletWritten && r.signal == SIGTERM }
+    /// The banner of a committed action: its CANCEL stays locked until the action ends.
+    func walletLockedPrompt() -> [String: Any] {
+        walletBackingUp || walletNewCard ? ["type": "cardPrompt", "phase": "provisioning", "quitting": quitPending, "new": walletNewCard]
+            : ["type": "cardPrompt", "phase": "broadcasting", "n": walletTxTotal, "i": walletSentIds.count, "quitting": quitPending]
     }
     /// Touch ID through `gate`, announced on the banner; CANCEL dismisses the system prompt.
     func approve(_ reason: String, gate: AuthGate, _ done: @escaping (Bool, String?) -> Void) {
@@ -592,7 +653,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             return
         }
         // stopping a broadcast could hide whether a transaction went out
-        let refuse = { self.emit(["type": "cardPrompt", "phase": "broadcasting", "n": self.walletTxTotal, "i": self.walletSentIds.count, "quitting": self.quitPending]) }
+        let refuse = { self.emit(self.walletLockedPrompt()) }
         if walletCommitted { refuse(); return }
         guard let job = walletJob else {
             walletAuth.dismiss(); walletOp += 1
@@ -632,7 +693,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         if card, passphrase.isEmpty {
             emit(["type": "walletStatus", "state": "fail", "message": "A card wallet needs a passphrase (it guards the card keys)."]); return
         }
-        let op = walletBegin()
+        let op = walletBegin(); walletNewCard = card
+        let keysBefore = card ? cardKeyFiles() : []
         emit(["type": "walletStatus", "state": "working",
               "message": card ? "Provisioning — when asked, tap and HOLD the NEW card on the reader…" : "Creating \(name)…"])
         var args = ["--json", "--file", path, "new", "--offline"]
@@ -641,7 +703,9 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                                       progress: { [weak self] line in self?.walletProgress(line, op: op) }) { [weak self] r in
             guard let self, op == self.walletOp else { return }
             guard r.code == 0, WalletService.json(r)?["file"] != nil else {
-                if self.walletCancelling { self.walletCancelled() } else { self.walletFail(self.cliFailure(r, "Could not create the wallet.")) }
+                if card { self.walletNewCardFailed(r, newKeys: self.cardKeyFiles().subtracting(keysBefore), path: path, name: name) }
+                else if self.walletCancelling { self.walletCancelled() } else { self.walletFail(self.cliFailure(r, "Could not create the wallet.")) }
+                self.quitIfReported()
                 return
             }
             // a new file at a used path: drop everything cached for the one it replaced
@@ -653,10 +717,13 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             var passes = self.walletPassCache(); passes[self.walletFileKey(path)] = !passphrase.isEmpty || card
             UserDefaults.standard.set(passes, forKey: "walletPassByFile")
             if card {
+                let late = self.walletCancelling ? "The cancel came too late: the new card was already being written, and it finished. " : ""
                 self.walletFinish("done")
                 self.emit(["type": "walletStatus", "state": "ok",
-                           "message": "Card wallet created — the seed is sealed to the card and never shown. Make a duplicate with `xcoin-wallet-cli card-backup`. Unlock to derive its address (another tap)."])
+                           "message": late + "Card wallet created — the seed is sealed to the card and never shown. Make a backup card now. Unlock to derive its address (another tap)."])
+                self.emit(["type": "walletCardCreated", "name": name, "file": path], menu: false)
                 self.walletRefresh()
+                self.quitIfReported()
                 return
             }
             // one-time seed reveal for the paper backup, then derive the address
@@ -672,6 +739,36 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                 self.walletUnlock(passphrase: passphrase, remember: false)
             }
         }
+    }
+    /// A card wallet's creation that did not finish. What happened to the new card: a key file the
+    /// CLI saved during this run (it saves one before it changes the card's keys) or a write that
+    /// began (card-provisioning, unless it stopped in the CLI's pause) means it may be part-way set
+    /// up; the CLI's own words say so when it knows. The wallet file at `path` (it did not exist
+    /// before) is written only once the card is set up: if it is there, the wallet was created and
+    /// only the run's last step (sealing the card, the final report) did not confirm.
+    func walletNewCardFailed(_ r: WalletService.CLIResult, newKeys: Set<String>, path: String, name: String) {
+        if FileManager.default.fileExists(atPath: path) {
+            let why = walletCancelling ? "Cancelled as the new card was being finished." : cliFailure(r, "The new card wallet did not report finishing.")
+            walletFail(why + "\n\(name) was saved, so the new card was set up, but its last step did not confirm. Before you use \(name), UNLOCK it with the new card to check that the card opens it.")
+            walletRefresh()
+            return
+        }
+        let touched = !newKeys.isEmpty || (walletCommitted && !cardWriteUnstarted(r))
+        if walletCancelling, !touched {
+            walletCancelled(walletCommitted ? "Cancelled — no wallet was created, and nothing was written to the new card." : "Cancelled — no wallet was created."); return
+        }
+        var why = walletCancelling ? "Cancelled." : cliFailure(r, "Could not create the wallet.")
+        if !touched, walletCommitted { why += " It stopped before the write began: nothing was written to the new card." }
+        if touched, !why.lowercased().contains("do not rely on that card") {
+            let uids = newKeys.sorted().map { String($0.dropFirst("card-".count).dropLast(".auth".count)) }
+            why += "\nNo wallet was created, but the new card" + (uids.isEmpty ? "" : " (UID " + uids.joined(separator: ", ") + ")") + " was part-way set up: do not rely on that card."
+        }
+        walletFail(why)
+    }
+    /// Names of this Mac's card key files (~/.xcoin/card-<UID>.auth): names only, never opened.
+    func cardKeyFiles() -> Set<String> {
+        let d = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".xcoin")
+        return Set(((try? FileManager.default.contentsOfDirectory(atPath: d.path)) ?? []).filter { $0.range(of: "^card-[0-9A-Fa-f]{2,64}\\.auth$", options: .regularExpression) != nil })
     }
     func walletUnlock(passphrase: String, remember: Bool) {
         guard !walletBusy, let sel = selectedWallet() else { return }
@@ -860,6 +957,19 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             if walletCancelling, !walletCommitted, events {
                 walletSendOutcome("cancelled", "Cancelled — nothing was sent."); walletCancelled("Cancelled — nothing was sent."); return
             }
+            // the explorer or node answered with a refusal and nothing went out: the first transaction's (explorer or node), or on
+            // the node path a later one's in the check before any broadcast. The CLI emits "rejected" only when nothing was sent,
+            // and says why in plain words
+            if let rj = walletRejected, r.code != 0 {
+                let message = refusedText(r.stderr)
+                let receipt: [String: Any] = ["type": "walletSent", "txids": [String](), "transactions": rj.n, "partial": false, "explorer": walletSendFrom.explorer,
+                                              "refused": ["i": rj.i, "n": rj.n, "reason": rj.reason], "message": message]
+                walletSendOutcome("refused", message, receipt: receipt)
+                walletFinish("failed", ["refused": true])
+                emit(receipt)
+                emit(["type": "walletStatus", "state": "fail", "message": message])
+                return
+            }
             // stopped after broadcast-begin, or a CLI that never says how far it got: nothing is known either way
             let began = events ? " after its broadcast began" : ""
             let message = silent && (walletCommitted || walletCancelling || !events)
@@ -868,15 +978,22 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             walletSendOutcome("failed", message); walletFail(message)
             return
         }
-        let why = d["broadcast_error"] as? String ?? (silent ? (r.timedOut ? "the wallet CLI did not finish in time and was stopped" : "the wallet CLI stopped without a final report") + unknown : failure)
+        let why = (d["broadcast_error"] as? String).map(plainBroadcastError) ?? (silent ? (r.timedOut ? "the wallet CLI did not finish in time and was stopped" : "the wallet CLI stopped without a final report") + unknown : failure)
         walletFinish(complete ? "done" : "failed")
         var sent: [String: Any] = ["type": "walletSent", "txid": txids[0], "txids": txids, "transactions": total, "partial": !complete, "explorer": walletSendFrom.explorer,
                                    "amount": d["amount"] as? String ?? "", "fee": d["fee"] as? String ?? "", "vsize": d["vsize"] as? Int ?? 0, "change": d["change"] as? String ?? ""]
+        // refused: the network answered no to the next one, so it (and the rest) certainly did not go out; else the first unsent is unknown
+        // (the event, or a CLI that marks the partial send's JSON broadcast_rejected instead)
+        let refused = complete ? nil : walletRejected.flatMap { $0.i == txids.count + 1 ? $0 : nil }
+            ?? ((d["broadcast_rejected"] as? Bool) == true ? (i: txids.count + 1, n: total, reason: "refused") : nil)
         if !complete {
             sent["broadcast_error"] = why
-            if let u = d["unsent_txids"] as? [String], !u.isEmpty { sent["unsent_txids"] = u }   // the first: result unknown
+            if let u = d["unsent_txids"] as? [String], !u.isEmpty { sent["unsent_txids"] = u }   // the first: result unknown, unless refused
+            if let rj = refused { sent["refused"] = ["i": rj.i, "n": rj.n, "reason": rj.reason] }
         }
-        let message = complete ? (walletCancelling ? "The cancel came too late: sent." : "Sent.") : "Sent \(txids.count) of \(total) transactions: \(why)"
+        let message = complete ? (walletCancelling ? "The cancel came too late: sent." : "Sent.")
+            : refused.map { "Sent \(txids.count) of \(total) transactions. The network refused transaction \($0.i), so it was not sent" + ($0.i < total ? ", and the rest were never broadcast" : "") + ": \(why)" }
+            ?? "Sent \(txids.count) of \(total) transactions: \(why)"
         walletSendOutcome(complete ? "sent" : "partial", message, txids: txids, receipt: sent)
         if complete { emit(["type": "walletStatus", "state": "ok", "message": message]) }
         emit(sent)
@@ -928,6 +1045,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                 self?.emit(["type": "log", "source": "login", "message": String(text.suffix(3000))])
                 if let link, let url = URL(string: link) {
                     NSWorkspace.shared.open(url)
+                    self?.forumSignedIn()
                     self?.emit(["type": "loginStatus", "state": "ok", "message": "Signed in — your browser opened the one-time login link."])
                 }
             }
@@ -937,9 +1055,9 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             DispatchQueue.main.async {
                 self?.loginProcess = nil
                 if t.terminationStatus != 0 {
-                    self?.emit(["type": "loginStatus", "state": "fail", "message": "Sign-in failed — the engine log below has the exact error."])
+                    self?.emit(["type": "loginStatus", "state": "fail", "message": "Sign-in failed — the engine log (SETUP tab) has the exact error."])
                 } else {
-                    if !opened { self?.emit(["type": "loginStatus", "state": "ok", "message": "Signed in."]) }
+                    if !opened { self?.forumSignedIn(); self?.emit(["type": "loginStatus", "state": "ok", "message": "Signed in."]) }
                     // remember only a passphrase that just proved itself
                     if remember, !passphrase.isEmpty, let signer, (try? ForumCredential.save(passphrase, file: self?.walletFileKey(signer) ?? "")) != nil {
                         self?.emit(["type": "forumCred", "saved": true])
@@ -954,6 +1072,210 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             loginProcess = task
             emit(["type": "loginStatus", "state": "running", "message": "Signing the forum challenge with this Mac's wallet key…"])
         } catch { emit(["type": "loginStatus", "state": "fail", "message": error.localizedDescription]) }
+    }
+    // ── FORUM tab: the forum identity (key index 101) and the last sign-in ──
+    let forumURL = URL(string: "https://minedifferent.com")!
+    /// The wallet the forum signs with: the one the saved passphrase is bound to, else the default.
+    func forumWallet() -> WalletFile? {
+        let files = walletFiles()
+        if let bound = ForumCredential.file, ForumCredential.exists(), let f = files.first(where: { walletFileKey($0.path) == bound }) { return f }
+        return files.first(where: { $0.isDefault })
+    }
+    func forumIdCache() -> [String: String] { (UserDefaults.standard.dictionary(forKey: "forumIdByFile") as? [String: String]) ?? [:] }
+    func forumState(_ state: String = "idle") -> [String: Any] {
+        let f = forumWallet()
+        return ["type": "forumIdentity", "state": state, "wallet": f?.name ?? "", "card": f?.card ?? false,
+                "xid": f.flatMap { forumIdCache()[walletFileKey($0.path)] } ?? "", "last": UserDefaults.standard.double(forKey: "forumLastSignIn")]
+    }
+    func forumSignedIn() {
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "forumLastSignIn")
+        emit(forumState(), menu: false)
+    }
+    /// SHOW MY IDENTITY: `identity --index 101` of the forum wallet, run as a wallet action (card
+    /// tap and CANCEL on the banner). The saved passphrase is read only after Touch ID. Cached per file identity.
+    @MainActor func forumIdentity(passphrase typed: String) {
+        guard !walletBusy else {
+            emit(["type": "error", "message": "A wallet action is running (it may be waiting for Touch ID or your card). Let it finish or CANCEL it, then show your identity."], menu: false); return
+        }
+        guard let f = forumWallet() else { emit(["type": "error", "message": "No wallet file found — create one in NEW WALLET first."], menu: false); return }
+        let key = walletFileKey(f.path)
+        if forumIdCache()[key] != nil { emit(forumState(), menu: false); return }
+        let saved = typed.isEmpty && ForumCredential.exists() && ForumCredential.file == key
+        let hasPass = walletPassCache()[key] ?? passphraseRequired(f)
+        if hasPass, typed.isEmpty, !saved {
+            emit(["type": "error", "message": "\(f.name) has a passphrase: type it in the passphrase field, then SHOW MY IDENTITY."], menu: false); return
+        }
+        let op = walletBegin()
+        emit(["type": "walletStatus", "state": "working", "message": f.card ? "Reading your forum identity — tap your xCoin card when asked…" : "Reading your forum identity…"])
+        emit(forumState("working"), menu: false)
+        let run = { [weak self] (pw: String) in
+            guard let self else { return }
+            self.walletJob = WalletService.run(["--json", "--hrp", self.walletHrp(), "--file", f.path, "identity", "--index", "101"], passphrase: pw, timeout: f.card ? self.cardTimeout : 120,
+                                               progress: { [weak self] line in self?.walletProgress(line, op: op) }) { [weak self] r in
+                guard let self, op == self.walletOp else { return }
+                guard r.code == 0, let xid = WalletService.json(r)?["identity"] as? String, validIdentity(xid) else {
+                    if self.walletCancelling { self.walletCancelled() } else { self.walletFail(self.cliFailure(r, "Could not read the forum identity of \(f.name).")) }
+                    self.emit(self.forumState(), menu: false); return
+                }
+                var ids = self.forumIdCache(); ids[key] = xid
+                UserDefaults.standard.set(ids, forKey: "forumIdByFile")
+                self.walletFinish("done")
+                self.emit(["type": "walletStatus", "state": "ok", "message": "Forum identity read."])
+                self.emit(self.forumState(), menu: false)
+                self.walletRefresh()
+            }
+        }
+        guard saved, hasPass else { run(typed); return }
+        approve("show your forum identity (key index 101 of \(f.name)) with your saved wallet passphrase", gate: walletAuth) { [weak self] ok, why in
+            guard let self, op == self.walletOp else { return }
+            guard ok, let pw = try? ForumCredential.load() else { self.walletFail(why ?? "The saved passphrase could not be read."); self.emit(self.forumState(), menu: false); return }
+            self.emit(["type": "cardPrompt", "phase": "signing"])   // until the CLI reports a card wait
+            run(pw)
+        }
+    }
+
+    // ── WALLET tab: RECEIVE — a payment request drawn as a QR here (CoreImage), no network ──
+    func walletQR(_ b: [String: Any]) {
+        let address = (b["address"] as? String ?? "").lowercased(), amount = b["amount"] as? String ?? ""
+        var reply: [String: Any] = ["type": "walletQR", "address": address, "seq": b["seq"] as? Int ?? 0]
+        if let uri = paymentURI(address, amount: amount, hrp: walletHrp()), let qr = qrPNG(uri) {
+            reply["uri"] = uri; reply["png"] = qr.dataURL; reply["modules"] = qr.modules
+        } else {
+            reply["error"] = validAddress(address, hrp: walletHrp()) ? "Amount: above 0, at most 21,000,000, up to 8 decimals, with a dot (e.g. 1.5)." : "Not a \(walletHrp())1r… address of this network."
+        }
+        emit(reply, menu: false)
+    }
+
+    // ── Backup cards: card-status (no tap) for the WALLET header; MAKE BACKUP CARD ──
+    var cardStatusCache: [String: [String: Any]] = [:]   // file identity → card-status, typed
+    var cardStatusRunning = Set<String>()
+    var walletBackingUp = false                          // the running wallet action is card-backup
+    var walletSwapSeen = false                           // …past card-swap: a tap is for the blank card
+    var walletNewCard = false                            // the running wallet action is new --card (its card write commits like a backup's)
+    func backupState(_ f: WalletFile?) -> [String: Any] { f.flatMap { $0.card ? cardStatusCache[walletFileKey($0.path)] : nil } ?? [:] }
+    func cardStatusRefresh(_ f: WalletFile) {
+        let key = walletFileKey(f.path)
+        guard f.card, !quitPending, WalletService.cliPath() != nil, cardStatusRunning.insert(key).inserted else { return }
+        WalletService.run(["--json", "--file", f.path, "card-status"], passphrase: "", timeout: 30) { [weak self] r in
+            guard let self else { return }
+            self.cardStatusRunning.remove(key)
+            let info = cardStatusInfo(r.code == 0 ? WalletService.json(r) : nil, format: f.format)
+            self.cardStatusCache[key] = info
+            if let sel = self.selectedWallet(), self.walletFileKey(sel.path) == key { self.emit(["type": "walletBackup", "file": f.path, "data": info], menu: false) }
+        }
+    }
+    /// MAKE BACKUP CARD: Touch ID, then `card-backup --auto-swap`: the wallet card is read, swapped
+    /// on the reader for a blank one, and a copy written and sealed. CANCEL until card-provisioning;
+    /// from then on the write is committed like a broadcast: no CANCEL, no timeout, quits wait for it.
+    @MainActor func walletBackup(file: String) {
+        guard !walletBusy else {
+            emit(["type": "error", "message": "Another wallet action is still running — wait for it to finish, then make the backup card."], menu: false); return
+        }
+        guard let f = walletFiles().first(where: { $0.path == file }), f.card else { return }
+        guard f.format == "mmm2" else {
+            emit(["type": "error", "message": "\(f.name) is a dex-wallet-era card wallet: make its backup cards with dex-wallet-cli."], menu: false); return
+        }
+        let op = walletBegin(); walletBackingUp = true
+        emit(["type": "walletStatus", "state": "working", "message": "Backup card for \(f.name): approve with Touch ID…"])
+        approve("make a backup card for \(f.name) — its card key is copied to a new blank card", gate: walletAuth) { [weak self] ok, why in
+            guard let self, op == self.walletOp else { return }
+            guard ok else { self.walletFail(why ?? "Touch ID failed."); return }
+            self.walletBackupRun(f, op: op)
+        }
+    }
+    func walletBackupRun(_ f: WalletFile, op: Int) {
+        emit(["type": "cardPrompt", "phase": "signing"])   // until the CLI reports its card wait
+        emit(["type": "walletStatus", "state": "working", "message": "Backup card: tap and hold your wallet card, then swap it for a new blank card when the banner says so…"])
+        let budget = cardWaitBudget(ProcessInfo.processInfo.environment)   // three waits: the wallet card, its removal, the blank card
+        walletJob = WalletService.run(["--json", "--file", f.path, "card-backup", "--auto-swap"], passphrase: "", timeout: TimeInterval(3 * budget + 90),
+                                      progress: { [weak self] line in self?.walletProgress(line, op: op) }) { [weak self] r in
+            guard let self, op == self.walletOp else { return }
+            self.walletBackupDone(r, f)
+            self.quitIfReported()
+        }
+    }
+    func walletBackupDone(_ r: WalletService.CLIResult, _ f: WalletFile) {
+        defer { walletRefresh() }
+        let d = WalletService.json(r) ?? [:]
+        guard r.code == 0, d["ok"] as? Bool == true else {
+            let unstarted = !walletCommitted || cardWriteUnstarted(r)   // a cancel (or quit, or timeout) that crossed card-provisioning stopped it in the pause
+            if walletCancelling, unstarted { walletCancelled("Cancelled — nothing was written to a new card."); return }
+            let why = walletCancelling ? "Cancelled as the write began." : cliFailure(r, "The backup card was not made.")
+            if !walletCommitted { walletFail(why) }
+            else if unstarted { walletFail(why + " It stopped before the write began: nothing was written to the new card.") }
+            else { walletFail(why.lowercased().contains("do not rely on that card") ? why : why + "\nThe write did not finish cleanly: do not rely on that card. Make another backup with a fresh blank card.") }
+            return
+        }
+        let n = d["cards"] as? Int, uid = d["card_uid"] as? String ?? ""
+        let late = walletCancelling ? "The cancel came too late: the write had already begun, and it finished. " : ""
+        walletFinish("done")
+        let message = late + "Backup card written ✓" + (uid.isEmpty ? "" : " (UID \(uid))") + (n.map { " — \($0) cards now open \(f.name)." } ?? ".") + " Keep it apart from your wallet card."
+        emit(["type": "walletStatus", "state": "ok", "message": message])
+        emit(["type": "walletBackupDone", "file": f.path, "cards": n ?? 0, "message": message], menu: false)
+    }
+
+    // ── Mining schedule (SETUP): holds and resumes the engine; never undoes a manual STOP ──
+    var schedule = MiningSchedule()
+    var schedulePaused = false         // MMM would mine but the schedule holds it: resumed when allowed
+    var scheduleStopping = false       // the schedule is stopping the engine
+    var scheduleOverride: String?      // MINE ANYWAY: the hold it overrode, until the schedule's verdict changes
+    var scheduleReason = ""
+    var scheduleTimer: Timer?
+    var scheduleSent = ""
+    var scheduleSensors: () -> ScheduleSensors = { readScheduleSensors() }   // a test harness feeds its own
+    func scheduleHoldNow() -> (code: String, reason: String)? { scheduleHold(schedule, scheduleSensors()) }
+    func scheduleBegin() {
+        scheduleTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in Task { @MainActor in self?.scheduleTick() } }
+        if let scheduleTimer { RunLoop.main.add(scheduleTimer, forMode: .common) }
+        NotificationCenter.default.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.scheduleTick() } }
+    }
+    @MainActor func scheduleTick() {
+        guard !quitPending else { return }   // quitting: the quit stopped the engine; nothing restarts it while a committed action finishes
+        let hold = scheduleHoldNow()
+        if let hold { scheduleReason = hold.reason }
+        if let o = scheduleOverride, hold?.code != o { scheduleOverride = nil }
+        if hold != nil, scheduleOverride == nil, let p = process, !scheduleStopping {
+            schedulePaused = true; scheduleStopping = true; p.terminate()   // scheduleEngineEnded reports it
+        } else if hold == nil, schedulePaused, process == nil, !launching {
+            schedulePaused = false
+            scheduleEmit(event: "resumed")
+            Task { await start() }   // one attempt per resume, like the auto-start
+            return
+        }
+        scheduleEmit()
+    }
+    func scheduleEngineEnded() {
+        if scheduleStopping { scheduleStopping = false; scheduleEmit(event: "paused") }
+        else { schedulePaused = false; scheduleOverride = nil; scheduleEmit() }
+    }
+    /// STOP (page or menu bar): the schedule drops its wish to mine, so it never restarts this session.
+    func manualStop() {
+        schedulePaused = false; scheduleStopping = false; scheduleOverride = nil
+        process?.terminate(); scheduleEmit()
+    }
+    @MainActor func mineAnyway() {
+        guard process == nil, !launching, !quitPending else { return }
+        scheduleOverride = scheduleHoldNow()?.code; schedulePaused = false
+        Task { await start(user: true) }
+    }
+    @MainActor func scheduleSave(_ b: [String: Any]) {
+        guard let s = MiningSchedule(b) else {
+            emit(["type": "error", "message": "Schedule not saved: idle minutes are 1–120 and the two times must differ (HH:MM)."], menu: false)
+            scheduleEmit(force: true); return
+        }
+        schedule = s; scheduleOverride = nil   // a new schedule ends MINE ANYWAY
+        UserDefaults.standard.set(s.dict, forKey: "miningSchedule")
+        scheduleTick(); scheduleEmit(event: "saved")
+    }
+    /// The page's and the menu bar's schedule state: sent when it changes, or with an event.
+    func scheduleEmit(event: String? = nil, force: Bool = false) {
+        let hold = scheduleHoldNow()?.reason ?? "", reason = schedulePaused ? scheduleReason : ""
+        let key = [schedule.mode, String(schedule.idle), schedule.from, schedule.to, String(schedule.hot), String(schedulePaused), reason, hold, String(scheduleOverride != nil)].joined(separator: "|")
+        guard force || event != nil || key != scheduleSent else { return }
+        scheduleSent = key
+        var m: [String: Any] = ["type": "schedule", "data": schedule.dict, "paused": schedulePaused, "reason": reason, "hold": hold, "override": scheduleOverride != nil]
+        if let event { m["event"] = event }
+        emit(m)
     }
     func showFullWindow() {
         if window.isMiniaturized { window.deminiaturize(nil) }
@@ -970,8 +1292,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         process?.terminate(); WalletService.terminateAll(grace: 1)
         guard sendCommitted else { return .terminateNow }
         quitPending = true; quitReply = { sender.reply(toApplicationShouldTerminate: true) }
-        emit(["type": "cardPrompt", "phase": "broadcasting", "n": walletTxTotal, "i": walletSentIds.count, "quitting": true], menu: false)
-        menuBar?.update(["type": "error", "message": "Finishing a broadcast — MMM quits when it is done."])
+        emit(walletLockedPrompt(), menu: false)
+        menuBar?.update(["type": "error", "message": walletBackingUp ? "Finishing the backup card — MMM quits when it is done." : walletNewCard ? "Finishing the new card — MMM quits when it is done." : "Finishing a broadcast — MMM quits when it is done."])
         showFullWindow()
         return .terminateLater
     }
@@ -982,7 +1304,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         Task { @MainActor in
             defer { statsBusy = false }
             do {
-                let stats = try await get("http://127.0.0.1:47476/stats",local:true)
+                let stats = try await get("http://127.0.0.1:\(statsPort)/stats",local:true)
                 guard process === owner else { return }
                 emit(["type":"miner","data":stats])
             } catch {
@@ -1047,7 +1369,7 @@ func startupSettingsComplete(_ p:[String:String]) -> Bool {
 /// One stderr line of the wallet CLI's XCOIN_EVENTS protocol → the page's cardPrompt,
 /// plus the txid a broadcast event reports. Other lines, and "done" (the exit code
 /// decides done or failed), → nil.
-func cliEvent(_ line: String) -> (prompt: [String: Any], txid: String?)? {
+func cliEvent(_ line: String, budget: Int = 60) -> (prompt: [String: Any], txid: String?)? {
     guard let at = line.range(of: "XCOIN-EVENT ") else { return nil }
     let f = line[at.upperBound...].split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\r" }).map(String.init)
     guard let kind = f.first else { return nil }
@@ -1055,8 +1377,13 @@ func cliEvent(_ line: String) -> (prompt: [String: Any], txid: String?)? {
     switch kind {
     case "card-wait":
         let s = f.count > 1 ? Double(f[1]).flatMap { $0.isFinite ? Int(min(300, max(1, $0)).rounded()) : nil } : nil
-        return (["type": "cardPrompt", "phase": "tap", "seconds": s ?? 60], nil)
+        return (["type": "cardPrompt", "phase": "tap", "seconds": s ?? budget], nil)
     case "card-ok": return (["type": "cardPrompt", "phase": "signing", "cardRead": true], nil)
+    case "card-swap": return (["type": "cardPrompt", "phase": "swap"], nil)
+    case "card-removed": return (["type": "cardPrompt", "phase": "tap", "blank": true, "seconds": budget], nil)   // the blank card's wait
+    case "card-provisioning": return (["type": "cardPrompt", "phase": "provisioning"], nil)
+    case "card-retry":   // the reader reset the card during a READ: the CLI reconnects and reads again (never during a write)
+        return (["type": "cardPrompt", "phase": "retry", "attempt": max(1, i ?? 1), "seconds": budget], nil)   // it waits for the card again, a whole budget
     case "signing":
         guard let i, let n, i >= 1, i <= n else { return nil }
         return (["type": "cardPrompt", "phase": "signing", "i": i, "n": n], nil)
@@ -1068,6 +1395,68 @@ func cliEvent(_ line: String) -> (prompt: [String: Any], txid: String?)? {
         return (["type": "cardPrompt", "phase": "broadcasting", "i": i, "n": n], f[3].lowercased())
     default: return nil
     }
+}
+/// "XCOIN-EVENT rejected <i> <n> <reason-token>": the explorer or node ANSWERED with a refusal of
+/// transaction i of n, so it was not accepted (and nothing after it was broadcast). The token is
+/// bounded to plain reason characters; nil for any other line.
+func cliRejected(_ line: String) -> (i: Int, n: Int, reason: String)? {
+    guard let at = line.range(of: "XCOIN-EVENT rejected ") else { return nil }
+    let f = line[at.upperBound...].split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\r" }).map(String.init)
+    guard f.count >= 2, let i = Int(f[0]), let n = Int(f[1]), i >= 1, i <= n else { return nil }
+    let token = String((f.count > 2 ? f[2] : "").filter { $0.isASCII && ($0.isLetter || $0.isNumber || "-_.:".contains($0)) }.prefix(64))
+    return (i, n, token.isEmpty ? "refused" : token)
+}
+/// A network reject reason in plain words, as the wallet CLI's reject_plain words it (the caller keeps the raw reason).
+func rejectPlain(_ reason: String) -> String {
+    let r = reason.lowercased(), has = { (keys: [String]) in keys.contains { r.contains($0) } }
+    if has(["txn-mempool-conflict", "insufficient fee", "replacement-failed", "bip125-replacement-disallowed", "too many potential replacements", "replacement-adds-unconfirmed"]) {
+        return "these coins are already being spent by an earlier send that has not confirmed yet. Wait for the next block, then send again."
+    }
+    if has(["missingorspent", "missing-inputs", "inputs missing or spent"]) { return "these coins were already spent." }
+    if r.contains("mempool min fee not met") { return "its fee is below what the network accepts right now. Send again with a higher fee." }
+    if r.contains("min relay fee not met") { return "its fee is below the network's minimum relay fee. Send again with a higher fee." }
+    if r.contains("below-min") || r.hasPrefix("dust") { return "an amount in it is below the network's smallest allowed output (0.00010000 XCF, 10,000 sat)." }
+    if has(["bad_hex", "decode failed"]) { return "the transaction could not be read." }
+    if has(["too_large", "tx-size"]) { return "the transaction is too large." }
+    return "the network refused this transaction."
+}
+/// A split send's broadcast_error: a later transaction's refusal, which the CLI's JSON carries as
+/// "broadcast rejected: <reason>", in plain words with the raw reason in parentheses; other text as it is.
+func plainBroadcastError(_ s: String) -> String {
+    let t = s.trimmingCharacters(in: .whitespacesAndNewlines), prefix = "broadcast rejected:"
+    guard t.lowercased().hasPrefix(prefix) else { return s }
+    let reason = t.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
+    return reason.isEmpty ? rejectPlain("") : rejectPlain(reason) + " (" + reason + ")"
+}
+/// A refused send in the CLI's own plain words ("Nothing was sent: …"), whole, without its "error: " prefix.
+func refusedText(_ stderr: String) -> String {
+    let t = cliErrorText(stderr, fallback: "Nothing was sent: the network refused the transaction.")
+    return t.hasPrefix("error: ") ? String(t.dropFirst(7)) : t
+}
+/// "xcoin:<address>[?amount=<xcf>]": a valid address of `hrp`; the optional amount above 0, at most
+/// 21 million, dot decimals, written canonically ("1.50" → "1.5"). nil otherwise.
+func paymentURI(_ address: String, amount: String, hrp: String) -> String? {
+    guard validAddress(address, hrp: hrp) else { return nil }
+    let a = "xcoin:" + address.lowercased(), t = amount.trimmingCharacters(in: .whitespaces)
+    if t.isEmpty { return a }
+    guard let s = sats(xcf: t), s > 0, s <= 21_000_000 * 100_000_000 else { return nil }
+    return a + "?amount=" + xcfText(s)
+}
+/// A forum identity as the CLI prints it: xid1 and bech32 characters.
+func validIdentity(_ s: String) -> Bool { s.range(of: "^xid1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{38,90}$", options: .regularExpression) != nil }
+/// The WALLET header's backup facts from `card-status --json`, typed and bounded. A CLI without
+/// card-status: the fixed answer for a dex-era (mmm5) file, else unknown.
+func cardStatusInfo(_ d: [String: Any]?, format: String) -> [String: Any] {
+    let text = { (v: Any?, n: Int) in String(((v as? String) ?? (v as? NSNumber)?.stringValue ?? "").prefix(n)) }
+    guard let d, let card = d["card"] as? Bool else {
+        return format == "mmm5" ? ["card": true, "format": format, "backup_supported": false, "note": "Backups of dex-wallet-era card wallets are made with dex-wallet-cli."]
+            : ["card": true, "format": format, "unknown": true]
+    }
+    var out: [String: Any] = ["card": card, "format": d["format"] is String ? text(d["format"], 16) : format, "backup_supported": d["backup_supported"] as? Bool ?? false, "note": text(d["note"], 600),
+                              "cards": ((d["cards"] as? [[String: Any]]) ?? []).prefix(32).map { ["uid": text($0["uid"], 32), "label": text($0["label"], 40), "permanent": $0["permanent"] as? Bool ?? false, "created": text($0["created"], 32)] }]
+    if let n = d["count"] as? Int, n >= 0 { out["count"] = n }
+    if let f = d["family"] as? String { out["family"] = String(f.prefix(64)) }
+    return out
 }
 /// The CLI's card-wait budget: XCOIN_CARD_TIMEOUT (5…300 s), else 60 s.
 func cardWaitBudget(_ env: [String: String]) -> Int {

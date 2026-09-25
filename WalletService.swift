@@ -10,13 +10,17 @@
 import Foundation
 
 enum WalletService {
-    struct CLIResult { let code: Int32; let stdout: String; let stderr: String; var timedOut = false }
+    /// `signal`: the signal that ended the CLI (0 when it exited by itself). `timedOut`: the timeout
+    /// stopped it (its timer fired and a signal ended it; a run that committed as the timer fired
+    /// ignores the SIGTERM, is spared the SIGKILL, and ends by itself).
+    struct CLIResult { let code: Int32; let stdout: String; let stderr: String; var timedOut = false; var signal: Int32 = 0 }
     /// One CLI run. cancel() also works before the child exists: it is then never started.
-    /// From the child's "XCOIN-EVENT broadcast-begin" on, the run is committed: neither
-    /// cancel() nor the timeout stops it, since a transaction may be on its way out.
+    /// From the child's "XCOIN-EVENT broadcast-begin" (or card-provisioning) on, the run is
+    /// committed: neither cancel() nor the timeout stops it, since a transaction may be on its
+    /// way out (or a card half written).
     final class Job {
         private let lock = NSLock()
-        private var process: Process?, cancelled = false, expired = false, committed = false
+        private var process: Process?, cancelled = false, expired = false, committed = false, extra: TimeInterval = 0
         /// SIGTERM the child's whole tree, SIGKILL what is left after 1 s. Any thread.
         /// false, and nothing signalled, once the run is committed.
         @discardableResult func cancel() -> Bool {
@@ -27,6 +31,9 @@ enum WalletService {
             return true
         }
         var isCommitted: Bool { lock.lock(); defer { lock.unlock() }; return committed }
+        /// More time before the timeout stops the run: the CLI waits for a card again (a reader reset). Any thread.
+        func extend(by seconds: TimeInterval) { lock.lock(); extra += max(0, seconds); lock.unlock() }
+        fileprivate func takeExtension() -> TimeInterval { lock.lock(); defer { lock.unlock() }; let e = extra; extra = 0; return e }
         fileprivate var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
         /// false: cancelled while it launched, so the caller stops it
         fileprivate func attach(_ p: Process) -> Bool { lock.lock(); defer { lock.unlock() }; process = p; return !cancelled }
@@ -47,6 +54,9 @@ enum WalletService {
         guard let n = line[at.upperBound...].split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\r" }).first.flatMap({ Int($0) }), n >= 1 else { return nil }
         return n
     }
+    /// 1 for "XCOIN-EVENT card-provisioning": a backup card is being written, and an
+    /// interrupted write could leave it half made. Committed like a broadcast.
+    static func provisioningBegin(_ line: String) -> Int? { line.contains("XCOIN-EVENT card-provisioning") ? 1 : nil }
     /// After broadcast-begin the timeout no longer applies; this bound replaces it. Each
     /// broadcast is one HTTP call the CLI caps at 60 s, so 180 s per transaction trips only
     /// on a wedged CLI, whose result is unknown either way (without it MMM stays busy forever).
@@ -90,6 +100,11 @@ enum WalletService {
     }
     /// A run past broadcast-begin is still going. Any thread.
     static var committedRunning: Bool { lock.lock(); defer { lock.unlock() }; return !committed.isEmpty }
+    /// Pids of the tracked children that are committed now. Any thread.
+    private static func committedPids() -> Set<pid_t> {
+        lock.lock(); defer { lock.unlock() }
+        return Set(running.filter { committed.contains($0.key) }.map { $0.value.processIdentifier })
+    }
     /// broadcast-begin: under the same lock as terminateAll, so either it signalled first
     /// (the CLI's grace pause, nothing sent) or it skips the child. true the first time only.
     fileprivate static func commit(_ job: Job, _ p: Process) -> Bool {
@@ -120,24 +135,38 @@ enum WalletService {
     }
     /// Signal each root and all its descendants, whatever process group they
     /// run in (NSTask gives every child its own). SIGCONT wakes a stopped child
-    /// so it can act on the SIGTERM.
-    private static func signalTrees(_ roots: [pid_t], grace: TimeInterval) {
+    /// so it can act on the SIGTERM. After `grace`, SIGKILL what is left, but never
+    /// the tree of a run that committed meanwhile (unless `force`: the backstop): the
+    /// SIGTERM reached it after its CLI's pause, which it ignores by design while it
+    /// broadcasts or writes a card, and a SIGKILL there could half-write the card.
+    private static func signalTrees(_ roots: [pid_t], grace: TimeInterval, force: Bool = false) {
         let table = procs(), me = getpid(), myGroup = getpgrp()
-        var pids = Set<pid_t>(), queue = roots
-        while let p = queue.popLast() {
-            guard p > 1, p != me, pids.insert(p).inserted else { continue }
-            queue += table.filter { $0.kp_eproc.e_ppid == p }.map { $0.kp_proc.p_pid }
+        var trees: [pid_t: Set<pid_t>] = [:], seen = Set<pid_t>()
+        for root in roots {
+            var tree = Set<pid_t>(), queue = [root]
+            while let p = queue.popLast() {
+                guard p > 1, p != me, seen.insert(p).inserted else { continue }
+                tree.insert(p)
+                queue += table.filter { $0.kp_eproc.e_ppid == p }.map { $0.kp_proc.p_pid }
+            }
+            if !tree.isEmpty { trees[root] = tree }
         }
+        let pids = trees.values.reduce(into: Set<pid_t>()) { $0.formUnion($1) }
         guard !pids.isEmpty else { return }
         func send(_ sig: Int32, to targets: Set<pid_t>) {
             for p in targets { if getpgid(p) == p, p != myGroup { killpg(p, sig) }; kill(p, sig) }
         }
         send(SIGTERM, to: pids); send(SIGCONT, to: pids)
         guard grace > 0 else { return }
-        func alive() -> Set<pid_t> { Set(procs().filter { pids.contains($0.kp_proc.p_pid) && Int32($0.kp_proc.p_stat) != SZOMB }.map { $0.kp_proc.p_pid }) }
+        /// the trees still to stop: all of them, but those whose run committed since the SIGTERM
+        func stoppable() -> Set<pid_t> {
+            let spared = force ? [] : committedPids()
+            return trees.filter { !spared.contains($0.key) }.values.reduce(into: Set<pid_t>()) { $0.formUnion($1) }
+        }
+        func alive(_ of: Set<pid_t>) -> Set<pid_t> { Set(procs().filter { of.contains($0.kp_proc.p_pid) && Int32($0.kp_proc.p_stat) != SZOMB }.map { $0.kp_proc.p_pid }) }
         let deadline = Date() + grace
-        while Date() < deadline, !alive().isEmpty { usleep(20_000) }
-        send(SIGKILL, to: alive())
+        while Date() < deadline, !alive(stoppable()).isEmpty { usleep(20_000) }
+        send(SIGKILL, to: alive(stoppable()))
     }
     private static func started(_ k: kinfo_proc) -> Double {
         Double(k.kp_proc.p_un.__p_starttime.tv_sec) + Double(k.kp_proc.p_un.__p_starttime.tv_usec) / 1e6
@@ -192,7 +221,14 @@ enum WalletService {
             try? inPipe.fileHandleForWriting.close()
             if !job.attach(p) { DispatchQueue.global().async { signalTrees([p.processIdentifier], grace: 1) } }
             let pid = p.processIdentifier
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { if p.isRunning, job.expire() { signalTrees([pid], grace: 5) } }
+            func arm(_ after: TimeInterval) {
+                DispatchQueue.global().asyncAfter(deadline: .now() + after) {
+                    guard p.isRunning else { return }
+                    let more = job.takeExtension()   // time granted while this timer ran: wait that much longer
+                    if more > 0 { arm(more) } else if job.expire() { signalTrees([pid], grace: 5) }
+                }
+            }
+            arm(timeout)
             // Drain both pipes at once: a child blocked on a full stderr pipe never closes stdout.
             let err = NSMutableData(), drained = DispatchGroup()
             DispatchQueue.global().async(group: drained) {
@@ -200,8 +236,8 @@ enum WalletService {
                 var line = Data()
                 func deliver(_ d: Data) {
                     let s = String(decoding: d, as: UTF8.self)
-                    if let n = broadcastBegin(s), commit(job, p) {
-                        DispatchQueue.global().asyncAfter(deadline: .now() + Double(n) * broadcastBackstop) { if p.isRunning, job.expire(backstop: true) { signalTrees([pid], grace: 5) } }
+                    if let n = broadcastBegin(s) ?? provisioningBegin(s), commit(job, p) {
+                        DispatchQueue.global().asyncAfter(deadline: .now() + Double(n) * broadcastBackstop) { if p.isRunning, job.expire(backstop: true) { signalTrees([pid], grace: 5, force: true) } }
                     }
                     if let progress { DispatchQueue.main.async { progress(s) } }
                 }
@@ -221,7 +257,7 @@ enum WalletService {
             let result = CLIResult(code: p.terminationStatus,
                                    stdout: String(data: out, encoding: .utf8) ?? "",
                                    stderr: String(data: err as Data, encoding: .utf8) ?? "",
-                                   timedOut: job.didExpire)
+                                   timedOut: job.didExpire && p.terminationReason == .uncaughtSignal, signal: p.terminationReason == .uncaughtSignal ? p.terminationStatus : 0)
             DispatchQueue.main.async { done(result) }
         }
         return job

@@ -48,9 +48,9 @@ APP="$PWD/build/MMM.app"
 # Start from an empty bundle so nothing from an earlier build is signed in.
 rm -rf "$APP"
 mkdir -p build/module-cache "$APP"/Contents/{MacOS,Resources} build/MMM.iconset
-run_step "Compile MMM window and menu bar" swiftc -module-cache-path build/module-cache -O App.swift MenuBar.swift Pickaxe.swift PoolCredential.swift ForumCredential.swift WalletService.swift -o "$APP/Contents/MacOS/MMM" -framework Cocoa -framework WebKit -framework Security -framework LocalAuthentication
+run_step "Compile MMM window and menu bar" swiftc -module-cache-path build/module-cache -O App.swift MenuBar.swift Pickaxe.swift PoolCredential.swift ForumCredential.swift WalletService.swift Schedule.swift QRCode.swift -o "$APP/Contents/MacOS/MMM" -framework Cocoa -framework WebKit -framework Security -framework LocalAuthentication -framework IOKit -framework CoreImage
 run_step "Compile and optimize MetalDAG mining engine" swiftc -module-cache-path build/module-cache -O Engine/main.swift Engine/Login.swift Engine/StatsServer.swift Engine/MetalDAGEngine.swift Engine/MetalDAGShader.swift -o "$APP/Contents/Resources/NerdMiner" -framework Metal -framework CoreGraphics
-run_step "Bundle five-tab dashboard and themes" cp -X index.html style.css app.js identicon.js pickaxe-white.svg "$APP/Contents/Resources/"
+run_step "Bundle seven-tab dashboard and themes" cp -X index.html style.css app.js identicon.js pickaxe-white.svg "$APP/Contents/Resources/"
 if [[ $mmm_wallet == 1 ]]; then run_step "Bundle offline wallet CLI" bundle_wallet "$APP" "$WALLET_SRC"; else wallet_warning; fi
 run_step "Compile icon renderer" swiftc -module-cache-path build/module-cache Icon.swift -o build/make-icon
 build/make-icon build/MMM.png
