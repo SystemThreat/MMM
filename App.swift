@@ -463,7 +463,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     func utxoSums(_ u: [String: Any]) -> (spendable: Int, immature: Int)? {
         var s = 0, i = 0
         for x in (u["utxos"] as? [[String: Any]] ?? []) {
-            guard let sats = x["amount_sats"] as? Int, (0...21_000_000 * 100_000_000).contains(sats) else { return nil }
+            guard let sats = x["amount_sats"] as? Int, (0...100_000_000 * 100_000_000).contains(sats) else { return nil }
             if (x["immature"] as? Bool) == true { guard let t = sum(i, sats) else { return nil }; i = t }
             else { guard let t = sum(s, sats) else { return nil }; s = t }
         }
@@ -831,7 +831,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         let authorize = { [weak self] in
             guard let self else { return }
             self.emit(["type": "walletStatus", "state": "working", "message": "Waiting for Touch ID…"])
-            self.approve("send \(amount) XCF to \(dest.lowercased()) from \(sel.name), key index \(idx)", gate: self.walletAuth) { [weak self] ok, why in
+            self.approve("send \(amount) XID to \(dest.lowercased()) from \(sel.name), key index \(idx)", gate: self.walletAuth) { [weak self] ok, why in
                 guard let self, op == self.walletOp else { return }
                 guard ok else { self.walletFail(why ?? "Touch ID failed."); return }
                 let pw = !formPass.isEmpty ? formPass : (credUsable ? ((try? ForumCredential.load()) ?? "") : "")
@@ -862,8 +862,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                 if want >= fresh {
                     self.walletFinish("done")
                     self.emit(["type": "walletStatus", "state": "fail", "message": want > fresh
-                        ? "\(amount) XCF is more than this wallet's spendable balance (\(xcfText(fresh)) XCF at key index \(idx)). Nothing was signed."
-                        : "\(amount) XCF is this wallet's whole spendable balance — leave room for the network fee. Nothing was signed."])
+                        ? "\(amount) XID is more than this wallet's spendable balance (\(xcfText(fresh)) XID at key index \(idx)). Nothing was signed."
+                        : "\(amount) XID is this wallet's whole spendable balance — leave room for the network fee. Nothing was signed."])
                     return
                 }
             }
@@ -1141,7 +1141,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         if let uri = paymentURI(address, amount: amount, hrp: walletHrp()), let qr = qrPNG(uri) {
             reply["uri"] = uri; reply["png"] = qr.dataURL; reply["modules"] = qr.modules
         } else {
-            reply["error"] = validAddress(address, hrp: walletHrp()) ? "Amount: above 0, at most 21,000,000, up to 8 decimals, with a dot (e.g. 1.5)." : "Not a \(walletHrp())1r… address of this network."
+            reply["error"] = validAddress(address, hrp: walletHrp()) ? "Amount: above 0, at most 100,000,000, up to 8 decimals, with a dot (e.g. 1.5)." : "Not a \(walletHrp())1r… address of this network."
         }
         emit(reply, menu: false)
     }
@@ -1415,7 +1415,7 @@ func rejectPlain(_ reason: String) -> String {
     if has(["missingorspent", "missing-inputs", "inputs missing or spent"]) { return "these coins were already spent." }
     if r.contains("mempool min fee not met") { return "its fee is below what the network accepts right now. Send again with a higher fee." }
     if r.contains("min relay fee not met") { return "its fee is below the network's minimum relay fee. Send again with a higher fee." }
-    if r.contains("below-min") || r.hasPrefix("dust") { return "an amount in it is below the network's smallest allowed output (0.00010000 XCF, 10,000 sat)." }
+    if r.contains("below-min") || r.hasPrefix("dust") { return "an amount in it is below the network's smallest allowed output (0.00010000 XID, 10,000 sat)." }
     if has(["bad_hex", "decode failed"]) { return "the transaction could not be read." }
     if has(["too_large", "tx-size"]) { return "the transaction is too large." }
     return "the network refused this transaction."
@@ -1434,12 +1434,12 @@ func refusedText(_ stderr: String) -> String {
     return t.hasPrefix("error: ") ? String(t.dropFirst(7)) : t
 }
 /// "xcoin:<address>[?amount=<xcf>]": a valid address of `hrp`; the optional amount above 0, at most
-/// 21 million, dot decimals, written canonically ("1.50" → "1.5"). nil otherwise.
+/// 100 million (the XID cap), dot decimals, written canonically ("1.50" → "1.5"). nil otherwise.
 func paymentURI(_ address: String, amount: String, hrp: String) -> String? {
     guard validAddress(address, hrp: hrp) else { return nil }
     let a = "xcoin:" + address.lowercased(), t = amount.trimmingCharacters(in: .whitespaces)
     if t.isEmpty { return a }
-    guard let s = sats(xcf: t), s > 0, s <= 21_000_000 * 100_000_000 else { return nil }
+    guard let s = sats(xcf: t), s > 0, s <= 100_000_000 * 100_000_000 else { return nil }
     return a + "?amount=" + xcfText(s)
 }
 /// A forum identity as the CLI prints it: xid1 and bech32 characters.
@@ -1481,7 +1481,7 @@ func explorerURL(_ base: String, _ path: String) -> URL? {
 }
 /// "12.5" → 1_250_000_000, exactly (no floating point); nil for anything else.
 func sats(xcf s: String) -> Int? {
-    guard !s.isEmpty, s != ".", s.range(of: "^[0-9]{0,8}(\\.[0-9]{0,8})?$", options: .regularExpression) != nil else { return nil }
+    guard !s.isEmpty, s != ".", s.range(of: "^[0-9]{0,9}(\\.[0-9]{0,8})?$", options: .regularExpression) != nil else { return nil }
     let parts = s.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
     let frac = parts.count > 1 ? String(parts[1]).padding(toLength: 8, withPad: "0", startingAt: 0) : "0"
     return (Int(parts[0]) ?? 0) * 100_000_000 + (Int(frac) ?? 0)

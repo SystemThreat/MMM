@@ -4,7 +4,7 @@
 - Installed app signature and Info.plist validate; all WebKit resources and the ICNS icon are present.
 - Nine address checks pass: testnet, mainnet, uppercase, cross-network rejection, checksum rejection, mixed-case rejection, witness-v2 rejection and nonzero padding rejection.
 - JavaScript syntax passes and script-to-address decoding matches a real block from the live testnet explorer.
-- Live explorer APIs returned testnet A height 872, 14 XCF coinbase payouts and the miner registry during verification.
+- Live explorer APIs returned testnet A height 872, 14-coin coinbase payouts and the miner registry during verification.
 - Password input is transported through stdin, JSON-escaped for Stratum authorization, and redacted from engine logging. Password is not stored in preferences.
 - Project copied to /Users/david/x-Coin/MMM; app copied to /Users/david/Applications/MMM.app. One MMM Dock entry is persisted.
 

@@ -70,8 +70,8 @@ assert(cliEvent("XCOIN-EVENT card-provisioning")?.prompt["phase"] as? String == 
 // RECEIVE: the payment URI; amounts in whole sats, canonical, dot decimals
 let payTo = "TESTADDR"
 assert(paymentURI(payTo, amount: "", hrp: "txa") == "xcoin:" + payTo && paymentURI(payTo.uppercased(), amount: " 1.50 ", hrp: "txa") == "xcoin:" + payTo + "?amount=1.5")
-assert(paymentURI(payTo, amount: "0.00000001", hrp: "txa") == "xcoin:" + payTo + "?amount=0.00000001" && paymentURI(payTo, amount: "21000000", hrp: "txa") == "xcoin:" + payTo + "?amount=21000000")
-for bad in ["0", "0.0", "21000000.00000001", "1,5", "1e3", "-1", "1.123456789", ".", "abc"] { assert(paymentURI(payTo, amount: bad, hrp: "txa") == nil) }
+assert(paymentURI(payTo, amount: "0.00000001", hrp: "txa") == "xcoin:" + payTo + "?amount=0.00000001" && paymentURI(payTo, amount: "100000000", hrp: "txa") == "xcoin:" + payTo + "?amount=100000000" && paymentURI(payTo, amount: "99999999.99999999", hrp: "txa") == "xcoin:" + payTo + "?amount=99999999.99999999" && sats(xcf: "100000000") == 10_000_000_000_000_000)
+for bad in ["0", "0.0", "100000000.00000001", "100000001", "1000000000", "1,5", "1e3", "-1", "1.123456789", ".", "abc"] { assert(paymentURI(payTo, amount: bad, hrp: "txa") == nil) }
 assert(paymentURI(payTo, amount: "", hrp: "xpa") == nil && paymentURI("txa1rbad", amount: "", hrp: "txa") == nil)
 // card-status → the header's facts, typed and JSON-safe
 let st = cardStatusInfo(["card": true, "format": "mmm2", "family": "ab12", "count": 2, "backup_supported": true, "note": "", "cards": [["uid": "04AA", "label": "primary", "permanent": true, "created": "2026-09-24"], ["uid": "04BB", "label": "backup", "permanent": false, "created": 1790000000]]], format: "mmm2")
@@ -96,7 +96,7 @@ assert(plainBroadcastError("broadcast rejected: txn-mempool-conflict") == spentT
 assert(plainBroadcastError("broadcast rejected: insufficient fee, rejecting replacement ab; new feerate 1 <= old 2") == spentTwice + " (insufficient fee, rejecting replacement ab; new feerate 1 <= old 2)")
 assert(plainBroadcastError("Broadcast rejected: bad-txns-inputs-missingorspent") == "these coins were already spent. (bad-txns-inputs-missingorspent)" && plainBroadcastError("broadcast rejected: missing-inputs") == "these coins were already spent. (missing-inputs)")
 assert(plainBroadcastError("broadcast rejected: replacement-failed") == spentTwice + " (replacement-failed)" && plainBroadcastError("broadcast rejected: min relay fee not met, 100 < 200") == "its fee is below the network's minimum relay fee. Send again with a higher fee. (min relay fee not met, 100 < 200)")
-assert(plainBroadcastError("broadcast rejected: bad-txout-below-min-value") == "an amount in it is below the network's smallest allowed output (0.00010000 XCF, 10,000 sat). (bad-txout-below-min-value)")
+assert(plainBroadcastError("broadcast rejected: bad-txout-below-min-value") == "an amount in it is below the network's smallest allowed output (0.00010000 XID, 10,000 sat). (bad-txout-below-min-value)")
 assert(plainBroadcastError("broadcast rejected: something-new") == "the network refused this transaction. (something-new)" && plainBroadcastError("broadcast rejected:") == "the network refused this transaction.")
 let lostLine = "cannot reach the explorer at https://x.example: timed out", worded = "these coins were already spent. (bad-txns-inputs-missingorspent)"
 assert(plainBroadcastError(lostLine) == lostLine && plainBroadcastError(worded) == worded)   // a lost connection, or words already plain: as they are
@@ -388,7 +388,7 @@ assert '"broadcast rejected: missing-inputs"' in harness and 'bad-txns-inputs-mi
 assert '.wallet-balances{flex:1;min-height:min(78px,max(44px,calc(100cqh - var(--wa-rest) - 45px)));' in css and 'container-type:size;--wa-rest:113px}' in css and '.wallet-body{--wa-rest:93px}}' in css and 'min-height:48px;overflow-y:auto' not in css
 assert '.metric strong{display:block;font-size:23px;margin-top:12px;letter-spacing:-1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' in css
 assert "const hashUnit=h=>h>=1e15?[1e15,'P']:h>=1e12?[1e12,'T']:h>=1e9?[1e9,'G']:[1e6,'M'];" in page and "b.scrollIntoView({block:'nearest'})" in page
-assert "document.addEventListener('keydown',rvKeys);" in page and '$(\'walletReceive\').onkeydown' not in page and 'aria-label="Receive XCF" tabindex="-1"' in html
+assert "document.addEventListener('keydown',rvKeys);" in page and '$(\'walletReceive\').onkeydown' not in page and 'aria-label="Receive XID" tabindex="-1"' in html
 # 20. contrast: the focus ring on every surface it sits on (3:1), NUKE's small label (4.5:1, both themes, hover), placeholders (4.5:1)
 ring=re.search(r':focus-visible\{outline:3px solid (#[0-9a-fA-F]{6});',css).group(1)
 for bg in ['#ffffff','#c7ff2e','#ffe0d9','#f4f4ef','#10110e','#151810','#1d2313']: assert ratio(ring,bg)>=3,(ring,bg,ratio(ring,bg))

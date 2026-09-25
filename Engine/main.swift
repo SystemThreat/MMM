@@ -1229,7 +1229,7 @@ func main() {
     guard isValidXcoinAddress(minerAddress) else {
         print("[-] '\(minerAddress)' is not a valid xCoin address.")
         if minerAddress.lowercased().hasPrefix("xid1") {
-            print("    An xid1... string is your forum identity (bech32m, HRP xid, no witness version): it cannot receive XCF.")
+            print("    An xid1... string is your forum identity (bech32m, HRP xid, no witness version): it cannot receive XID.")
             print("    Mine to a payout address instead; the forum identity is only for `NerdMiner login`.")
         }
         print("    Testnet A addresses start with txa1r..., mainnet with xpa1r... (witness v3, bech32m).")

@@ -1,6 +1,6 @@
 # MMM — Nerd Stats Edition
 
-Native Mac miner for xCoin Ӿ (XCF). Testnet A is live now; mainnet genesis is September 30, 2026.
+Native Mac miner for xCoin Ӿ (XID). Testnet A is retiring and testnet B is launching; mainnet genesis is November 1, 2026. Supply is capped at 100,000,000 XID, issued by "the Annual Tenth": a 6.25 / 12.5 / 25 XID warm-up, 50 XID per block to block 220,000, then 10% less every 110,000 blocks down to a 1.5 XID floor.
 
 Native Apple Silicon macOS app wrapping the existing NerdMiner MetalDAG engine, with a local WebKit dashboard. macOS 14+ and Xcode Command Line Tools are required to build.
 
@@ -44,7 +44,7 @@ says why and offers MINE ANYWAY (runs until the schedule's verdict next changes)
 A manual STOP is never undone by the schedule, and while MMM is quitting (waiting for a send or a
 backup card to finish) nothing starts mining. The schedule is saved on change; NUKE clears it.
 
-## Wallet tab — send XCF
+## Wallet tab — send XID
 
 The WALLET tab turns MMM into a spending wallet without ever holding a key.
 Balances are public reads of the configured explorer (`/api/utxos`); unlocking

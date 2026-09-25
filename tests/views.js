@@ -172,7 +172,7 @@ const walletState={wallets:[{name:'wallet.mmm',file:'/x/wallet.mmm',format:'mmm5
  // Receipt: every txid with a link and COPY; "N transactions" when split; a partial send says what did not go out.
  const tx=k=>String(k).repeat(64),rc=$('walletReceipt'),part=c=>rc.children.find(k=>k.className===c);
  await receive({type:'walletSent',txid:tx(1),txids:[tx(1),tx(2),tx(3),tx(4)],transactions:4,partial:false,amount:'1500.00000000',fee:'0.00400000',vsize:4000});
- assert.equal($('walletLockBtn').disabled,false);assert.equal(rc.hidden,false);assert.equal(text(rc.children[0].children[0]),'SENT ✓ 4 TRANSACTIONS');assert.match(text(rc.children[0]),/1500\.00000000 XCF · fee 0\.00400000 XCF · 4000 vB/);
+ assert.equal($('walletLockBtn').disabled,false);assert.equal(rc.hidden,false);assert.equal(text(rc.children[0].children[0]),'SENT ✓ 4 TRANSACTIONS');assert.match(text(rc.children[0]),/1500\.00000000 XID · fee 0\.00400000 XID · 4000 vB/);
  let rows=part('wr-list').children;assert.equal(rows.length,4);assert.equal(rows[2].children[0].title,tx(3));assert.match($('notice').textContent,/Sent in 4 transactions/);
  rows[2].children[0].onclick({preventDefault(){}});assert.deepEqual(last(),{action:'open',path:'/tx/'+tx(3)});rows[3].children[1].onclick({preventDefault(){},stopPropagation(){}});assert.deepEqual(last(),{action:'copy',text:tx(4)});
  await receive({type:'walletSent',txid:tx(5),txids:[tx(5),tx(6)],transactions:4,partial:true,broadcast_error:'explorer refused tx 3: mempool full'});
@@ -255,7 +255,7 @@ const walletState={wallets:[{name:'wallet.mmm',file:'/x/wallet.mmm',format:'mmm5
  f[3].focus();key('Tab');assert.equal(doc.activeElement,f[0]);assert.equal(prevented,1);f[1].focus();key('Tab');assert.equal(doc.activeElement,f[1]);assert.equal(prevented,1);   // mid-panel: the browser moves on
  f[0].focus();key('Tab',true);assert.equal(doc.activeElement,f[3]);$('rvClose').hidden=true;f[1].focus();key('Tab',true);assert.equal(doc.activeElement,f[3]);$('rvClose').hidden=false;   // a hidden control is skipped
  const pageBody=node('body');pageBody.focus();key('Tab');assert.equal(doc.activeElement,f[0]);pageBody.focus();key('Tab',true);assert.equal(doc.activeElement,f[3]);   // a click on the QR or the note left focus on the page: Tab comes back in
- assert.equal(html.includes('id="walletReceive" class="wallet-receive" role="dialog" aria-modal="true" aria-label="Receive XCF" tabindex="-1"'),true);   // a click inside the panel keeps focus in it
+ assert.equal(html.includes('id="walletReceive" class="wallet-receive" role="dialog" aria-modal="true" aria-label="Receive XID" tabindex="-1"'),true);   // a click inside the panel keeps focus in it
  $('rvAmount').value='0,5';js('requestQR()');assert.deepEqual(last(),{action:'walletQR',address:me,amount:'0.5',seq:js('rvSeq')});
  const old=js('rvSeq');$('rvAmount').value='2';js('requestQR()');await receive({type:'walletQR',address:me,seq:old,uri:'xcoin:'+me+'?amount=0.5',png:'data:old',modules:45});assert.equal($('rvImg').src,png);
  let np=posts.length;for(const bad of ['1,234','abc','1.123456789','0','-1','1e3','.']){$('rvAmount').value=bad;js('requestQR()');assert.equal(posts.length,np,bad);assert.equal($('rvImg').hidden,true,bad);assert.equal($('rvQr').hidden,true,bad);assert.equal($('rvNote').classList.contains('err'),true,bad)}
