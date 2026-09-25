@@ -1,5 +1,6 @@
 import Cocoa
 import WebKit
+import LocalAuthentication
 
 final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate, NSWindowDelegate {
     var window: NSWindow!
@@ -27,18 +28,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         UserDefaults.standard.register(defaults:["autoStartMining":true])
         if let saved = UserDefaults.standard.dictionary(forKey: "profile") as? [String: String] { profile.merge(saved) { _, new in new } }
         WalletService.reapOrphans()
-        // kill/pkill/logout signals take the ⌘Q path, so no card-reader child is orphaned.
-        // Caught (not SIG_IGN): children get the default action back on exec.
-        for sig in [SIGTERM, SIGHUP, SIGINT] {
-            signal(sig) { _ in }
-            let source = DispatchSource.makeSignalSource(signal: sig, queue: .global())
-            source.setEventHandler {
-                WalletService.terminateAll(grace: 1)                       // even if the main thread is stuck
-                DispatchQueue.main.async { NSApp.terminate(nil) }
-                DispatchQueue.global().asyncAfter(deadline: .now() + 5) { signal(sig, SIG_DFL); kill(getpid(), sig) }
-            }
-            source.resume(); signalSources.append(source)
-        }
+        catchQuits()
+        lastSendAtLaunch()
         // A passphrase saved before credentials were bound to a file belonged to the default wallet.
         if ForumCredential.file == nil, ForumCredential.exists(), let d = walletFiles().first(where: { $0.isDefault }) { ForumCredential.file = walletFileKey(d.path) }
         let config = WKWebViewConfiguration()
@@ -50,18 +41,52 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         window.title = "MMM — Nerd Stats Edition"
         window.minSize = NSSize(width: 940, height: 640)
         window.delegate = self; window.isReleasedWhenClosed = false
+        window.contentView = web
+        window.center(); window.makeKeyAndOrderFront(nil)
+        makeMenus()
+        loadPage()
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    func makeMenus() {
         menuBar = MenuBarController()
         menuBar.onShow = { [weak self] in self?.showFullWindow() }
         menuBar.onStop = { [weak self] in self?.process?.terminate() }
-        window.contentView = web
-        window.center(); window.makeKeyAndOrderFront(nil)
+        menuBar.onQuit = { [weak self] in self?.quit(nil) }
         let menu = NSMenu(); let item = NSMenuItem(); menu.addItem(item)
-        let appMenu = NSMenu(); appMenu.addItem(withTitle: "Quit MMM", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"); item.submenu = appMenu
+        let appMenu = NSMenu(); appMenu.addItem(withTitle: "Quit MMM", action: #selector(quit(_:)), keyEquivalent: "q").target = self; item.submenu = appMenu
         let edit = NSMenuItem(); menu.addItem(edit); let em = NSMenu(title:"Edit"); edit.submenu = em
         for (title, action, key) in [("Copy", "copy:", "c"),("Paste","paste:","v"),("Select All","selectAll:","a"),("Cut","cut:","x")] { em.addItem(withTitle:title,action:Selector(action),keyEquivalent:key) }
         NSApp.mainMenu = menu
-        loadPage()
-        NSApp.activate(ignoringOtherApps: true)
+    }
+    /// Every quit request: ⌘Q, the menu bar's, the quit Apple event (Dock, logout), kill/logout signals.
+    /// While a quit waits for a committed send, the rest are ignored: a second terminate: quits at once.
+    @objc func quit(_ sender: Any?) {
+        guard !quitPending else { showFullWindow(); return }
+        NSApp.terminate(sender)
+    }
+    @objc func quitEvent(_ event: NSAppleEventDescriptor, withReplyEvent reply: NSAppleEventDescriptor) { quit(nil) }
+    /// The quit Apple event (replacing AppKit's, so after launch) and kill/pkill/logout signals take
+    /// quit(_:), so no card-reader child is orphaned and a committed send finishes first.
+    /// Signals are caught (not SIG_IGN): children get the default action back on exec.
+    func catchQuits() {
+        NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(quitEvent(_:withReplyEvent:)), forEventClass: AEEventClass(kCoreEventClass), andEventID: AEEventID(kAEQuitApplication))
+        for sig in [SIGTERM, SIGHUP, SIGINT] {
+            signal(sig) { _ in }
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: .global())
+            source.setEventHandler { [weak self] in
+                WalletService.terminateAll(grace: 1)                       // even if the main thread is stuck
+                // a run-loop block, as ⌘Q is: inside a main-queue block AppKit's terminate-later wait
+                // could not run the main queue, where the committed send reports
+                CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) { self?.quit(nil) }
+                CFRunLoopWakeUp(CFRunLoopGetMain())
+                DispatchQueue.global().async {
+                    // a committed send ends at its exit or its backstop; then the main thread has 5 s to report it and quit
+                    while WalletService.committedRunning { usleep(100_000) }
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 5) { signal(sig, SIG_DFL); kill(getpid(), sig) }
+                }
+            }
+            source.resume(); signalSources.append(source)
+        }
     }
     func loadPage() { web.loadFileURL(page, allowingReadAccessTo: Bundle.main.resourceURL!) }
     /// Only the bundled page may load, and only it may talk to the native bridge.
@@ -74,6 +99,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         emit(["type":"profile", "data":profile])
         emit(["type":"autoStartPreference","enabled":UserDefaults.standard.bool(forKey:"autoStartMining")])
         emit(["type":"forumCred","saved":ForumCredential.exists()])
+        if let last = lastSendShown { emitLastSend(last) }
         statsTimer?.invalidate()
         statsTimer = Timer.scheduledTimer(withTimeInterval:2,repeats:true) { [weak self] _ in Task { @MainActor in self?.refreshMiner() } }
         if let statsTimer { RunLoop.main.add(statsTimer,forMode:.common) }
@@ -86,6 +112,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         } else {
             didAttemptAutoStart = true
             Task { @MainActor in
+                defer { if let last = lastSendShown { emitLastSend(last) } }   // again after the auto-start's own notices: this one matters more
                 do {
                     password = try PoolCredential.load(profile)
                     emit(["type":"credential","password":password])
@@ -105,34 +132,16 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     }
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.frameInfo.isMainFrame, isPage(message.frameInfo.request.url), let b = message.body as? [String:Any], let action = b["action"] as? String else { return }
+        guard !quitPending || ["copy", "open", "refresh", "walletRefresh", "walletCancel"].contains(action) else { return }   // quitting: nothing new starts
         switch action {
-        case "save":
-            guard process == nil, let p = b["profile"] as? [String:String] else { return }
-            let submittedPassword = b["password"] as? String ?? ""
-            var nextProfile = profile; nextProfile.merge(p) { _,new in new }
-            do { try PoolCredential.save(submittedPassword,profile:nextProfile) }
-            catch { emit(["type":"setupRequired","message":error.localizedDescription]); return }
-            password = submittedPassword
-            profile.merge(p) { _, new in new }; generation += 1; lastStats = [:]
-            UserDefaults.standard.set(profile, forKey:"profile"); emit(["type":"reset"]); menuBar.update(["type":"profile","data":profile]); refresh()
-            if b["startAfterSave"] as? Bool == true { Task { await start() } }
+        case "save": saveSetup(b)
         case "autoStartPreference":
             guard let enabled = b["enabled"] as? Bool else { return }
             UserDefaults.standard.set(enabled,forKey:"autoStartMining")
             emit(["type":"autoStartPreference","enabled":enabled])
         case "start": Task { await start() }
         case "login": forumLogin(passphrase: b["passphrase"] as? String ?? "", remember: b["remember"] as? Bool ?? false)
-        case "loginTouch":
-            // sign with the file the saved passphrase belongs to, not whatever is default now
-            let bound = ForumCredential.file, wallet = walletFiles().first { walletFileKey($0.path) == bound }?.path
-            if bound != nil, wallet == nil {
-                emit(["type": "loginStatus", "state": "fail", "message": "The saved passphrase belongs to a wallet file that has since changed or moved. Type the passphrase to sign in, or Forget the saved one."]); return
-            }
-            ForumCredential.authenticate { [weak self] ok, why in
-                guard let self else { return }
-                if ok, let pw = try? ForumCredential.load() { self.forumLogin(passphrase: pw, remember: false, wallet: wallet) }
-                else { self.emit(["type": "loginStatus", "state": "fail", "message": why ?? "Touch ID failed."]) }
-            }
+        case "loginTouch": loginTouch()
         case "loginForget":
             ForumCredential.forget()
             emit(["type": "forumCred", "saved": false])
@@ -141,19 +150,12 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "walletRefresh": walletRefresh()
         case "walletUnlock": walletUnlock(passphrase: b["passphrase"] as? String ?? "", remember: b["remember"] as? Bool ?? false)
         case "walletSelect": if let f = b["file"] as? String { walletSelect(file: f, index: b["index"] as? Int) }
+        case "walletCancel": walletCancel()
+        case "walletLock": walletLock()
         case "nuke": nukeInputs()
         case "walletCreate":
             walletCreate(name: b["name"] as? String ?? "", passphrase: b["passphrase"] as? String ?? "", card: b["card"] as? Bool ?? false)
-        case "walletWatchAdd":
-            if let a = (b["address"] as? String)?.trimmingCharacters(in: .whitespaces).lowercased(),
-               validAddress(a, hrp: walletHrp()) {
-                var w = UserDefaults.standard.stringArray(forKey: "walletWatched") ?? []
-                if !w.contains(a) { w.append(a) }
-                UserDefaults.standard.set(w, forKey: "walletWatched")
-                walletRefresh()
-            } else {
-                emit(["type": "walletStatus", "state": "fail", "message": "Not a valid \(walletHrp())1r… address to watch."])
-            }
+        case "walletWatchAdd": walletWatch(b["address"] as? String ?? "")
         case "walletWatchRemove":
             if let a = b["address"] as? String {
                 var w = UserDefaults.standard.stringArray(forKey: "walletWatched") ?? []
@@ -168,10 +170,30 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "refresh": refresh(); refreshMiner()
         case "minimize": window.miniaturize(nil)
         case "copy": if let s = b["text"] as? String { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(s, forType:.string) }
-        case "open":
-            if let path = b["path"] as? String, path.hasPrefix("/"), let url = URL(string:(profile["explorer"] ?? "") + path), ["https","http"].contains(url.scheme ?? "") { NSWorkspace.shared.open(url) }
+        case "open": if let url = explorerLink(b) { NSWorkspace.shared.open(url) }
         default: break
         }
+    }
+    func saveSetup(_ b: [String: Any]) {
+        guard process == nil, let p = b["profile"] as? [String:String] else { return }
+        guard !walletBusy else {   // the network and explorer stay those of the running action and its receipt
+            emit(["type":"setupRequired","message":"A wallet action is running. Let it finish (or CANCEL it), then save the setup."]); return
+        }
+        let submittedPassword = b["password"] as? String ?? ""
+        var nextProfile = profile; nextProfile.merge(p) { _,new in new }
+        do { try PoolCredential.save(submittedPassword,profile:nextProfile) }
+        catch { emit(["type":"setupRequired","message":error.localizedDescription]); return }
+        password = submittedPassword
+        profile.merge(p) { _, new in new }; generation += 1; lastStats = [:]
+        UserDefaults.standard.set(profile, forKey:"profile"); emit(["type":"reset"]); menuBar.update(["type":"profile","data":profile]); refresh()
+        if b["startAfterSave"] as? Bool == true { Task { await start() } }
+    }
+    /// The page's explorer link. A receipt names the explorer its send used: only the
+    /// configured one, or one a send (or the last session's) used, is taken.
+    func explorerLink(_ b: [String: Any]) -> URL? {
+        let origin = b["origin"] as? String, base = origin ?? profile["explorer"] ?? ""
+        guard let path = b["path"] as? String, origin == nil || origin == profile["explorer"] || explorersUsed.contains(base) else { return nil }
+        return explorerURL(base, path)
     }
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) { decisionHandler(isPage(navigationAction.request.url) ? .allow : .cancel) }
     func get(_ url: String, local: Bool = false) async throws -> [String:Any] {
@@ -453,8 +475,19 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             }
             guard gen == walletGen else { return }   // a newer refresh (other file, NUKE…) superseded this one
             state["balances"] = balances
+            walletSpendable = balances.compactMapValues { ($0 as? [String: Any])?["spendable_sats"] as? Int }
             emit(["type": "wallet", "data": state])
         }
+    }
+    func walletWatch(_ raw: String) {
+        let a = raw.trimmingCharacters(in: .whitespaces).lowercased()
+        guard validAddress(a, hrp: walletHrp()) else {   // not any wallet action's status
+            emit(["type": "error", "message": "Not a valid \(walletHrp())1r… address to watch."], menu: false); return
+        }
+        var w = UserDefaults.standard.stringArray(forKey: "walletWatched") ?? []
+        if !w.contains(a) { w.append(a) }
+        UserDefaults.standard.set(w, forKey: "walletWatched")
+        walletRefresh()
     }
     func walletSelect(file: String, index: Int? = nil) {
         guard walletFiles().contains(where: { $0.path == file }) else { return }
@@ -477,12 +510,114 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             Task { @MainActor in self.walletRefresh() }
         }
     }
+    // One wallet action at a time. walletOp numbers it; a CANCEL before its CLI starts
+    // bumps it, so that action's late callbacks (Touch ID, balance/explorer check) do nothing.
+    // A running CLI is stopped instead, and its own exit reports what happened.
+    var walletOp = 0
+    var walletJob: WalletService.Job?
+    var walletSentIds: [String] = []           // what the running send's backend accepted: honest if it dies midway
+    var walletTxTotal = 0
+    var walletCommitted = false                // broadcast-begin seen: no CANCEL from here
+    var walletCancelling = false               // CANCEL stopped the CLI; its exit reports
+    var walletSpendable: [String: Int] = [:]   // address → spendable sats (carried included), last refresh
+    var walletCardSeen = false                 // this action waited for or read a card
+    var walletSendFrom = (address: "", explorer: "")
+    var explorersUsed = Set<String>()          // explorers sends used (or the last session's did): receipt links may open them
+    var quitReply: (() -> Void)?               // a quit waiting for the committed send to be reported
+    var quitPending = false                    // set with quitReply, never cleared: MMM is quitting
+    var lastSendShown: [String: Any]?          // the last session's send, reported at page load until a new send starts
+    /// A send past broadcast-begin that is not reported yet (its exit may still be queued).
+    var sendCommitted: Bool { walletBusy && (walletCommitted || walletJob?.isCommitted == true) }
+    /// Touch ID of one caller. Sign-in and sends each have their own, so one's prompt
+    /// never drops or dismisses the other's pending approval.
+    final class AuthGate {
+        private(set) var op = 0
+        var ctx: LAContext?
+        var pending: Bool { ctx != nil }
+        func next() -> Int { op += 1; return op }
+        /// Dismiss the pending prompt and drop its answer; true if one was up.
+        @discardableResult func dismiss() -> Bool { op += 1; let had = ctx; ctx = nil; had?.invalidate(); return had != nil }
+    }
+    let walletAuth = AuthGate(), loginAuth = AuthGate()
+    /// A card action may take the CLI's card-wait budget plus 90 s, then it is stopped (never after broadcast-begin).
+    var cardTimeout: TimeInterval { TimeInterval(cardWaitBudget(ProcessInfo.processInfo.environment) + 90) }
+    func walletBegin() -> Int {
+        walletBusy = true; walletOp += 1; walletJob = nil; walletSentIds = []; walletTxTotal = 0; walletCommitted = false; walletCancelling = false; walletCardSeen = false
+        return walletOp
+    }
+    /// Every wallet action ends here: not busy, no child, the banner closed as `phase`.
+    func walletFinish(_ phase: String) { walletBusy = false; walletJob = nil; emit(["type": "cardPrompt", "phase": phase]) }
+    func walletFail(_ message: String) { walletFinish("failed"); emit(["type": "walletStatus", "state": "fail", "message": message]) }
+    func walletCancelled(_ message: String = "Cancelled.") { walletFinish("cancelled"); emit(["type": "walletStatus", "state": "fail", "message": message]) }
+    func cliFailure(_ r: WalletService.CLIResult, _ fallback: String) -> String {
+        let text = cliErrorText(r.stderr, fallback: fallback)
+        return r.timedOut ? "The wallet CLI did not finish in time and was stopped. " + text : text
+    }
+    /// A stderr line of action `op`: XCOIN-EVENT lines drive the page's banner. Read until
+    /// the CLI exits, CANCEL or not: a broadcast it reports is part of the final report.
+    func walletProgress(_ line: String, op: Int) {
+        guard op == walletOp, walletBusy, let e = cliEvent(line) else { return }
+        var prompt = e.prompt
+        let phase = prompt["phase"] as? String, broadcasting = phase == "broadcasting"
+        if let n = prompt["n"] as? Int { walletTxTotal = max(walletTxTotal, n) }
+        if phase == "tap" || prompt["cardRead"] != nil { walletCardSeen = true }
+        if phase == "signing", prompt["i"] != nil, walletCardSeen { prompt["card"] = true }   // "keep the card on the reader" only after a card wait
+        if broadcasting, !walletCommitted { walletCommitted = true; walletSendNote(["committed": true]) }
+        if let t = e.txid, !walletSentIds.contains(t) { walletSentIds.append(t); walletSendNote(["txids": walletSentIds]) }
+        if broadcasting, quitPending { prompt["quitting"] = true }
+        if !walletCancelling || broadcasting { emit(prompt) }   // after CANCEL only a broadcast still shows
+    }
+    /// Touch ID through `gate`, announced on the banner; CANCEL dismisses the system prompt.
+    func approve(_ reason: String, gate: AuthGate, _ done: @escaping (Bool, String?) -> Void) {
+        let mine = gate.next()
+        emit(["type": "cardPrompt", "phase": "touchid"])
+        var answered = false   // no Touch ID on this Mac: answered before authenticate returns
+        let ctx = ForumCredential.authenticate(reason: reason) { ok, why in
+            answered = true
+            guard mine == gate.op else { return }   // dismissed
+            gate.ctx = nil
+            done(ok, why)
+        }
+        if !answered, mine == gate.op { gate.ctx = ctx }
+    }
+    /// CANCEL. Before the CLI starts (Touch ID, balance or explorer check): ends the send,
+    /// nothing signed. While it runs: stops its whole process tree, and its exit reports what
+    /// actually happened. From broadcast-begin on: refused, the result follows at its exit.
+    @MainActor func walletCancel() {
+        guard walletBusy else {
+            // no wallet action: the banner can only be a sign-in's Touch ID prompt, or stale
+            let dismissed = loginAuth.dismiss()
+            emit(["type": "cardPrompt", "phase": dismissed ? "cancelled" : "done"])
+            if dismissed { emit(["type": "loginStatus", "state": "fail", "message": "Sign-in cancelled."]) }
+            return
+        }
+        // stopping a broadcast could hide whether a transaction went out
+        let refuse = { self.emit(["type": "cardPrompt", "phase": "broadcasting", "n": self.walletTxTotal, "i": self.walletSentIds.count, "quitting": self.quitPending]) }
+        if walletCommitted { refuse(); return }
+        guard let job = walletJob else {
+            walletAuth.dismiss(); walletOp += 1
+            walletCancelled("Cancelled — nothing was sent."); return
+        }
+        guard job.cancel() else { refuse(); return }   // committed on the reader thread; its event is on the way
+        walletCancelling = true
+    }
+    /// LOCK: forget the address derived for this file, network and key index, so
+    /// the unlock form (and its card tap) is back. No restart; nothing else is forgotten.
+    @MainActor func walletLock() {
+        guard !walletBusy, let sel = selectedWallet() else { return }
+        let key = walletAddrKey(sel.path, walletIndex(for: sel.path))
+        for name in ["walletAddrByFile2", "walletCarriedByFile2"] {
+            if var d = UserDefaults.standard.dictionary(forKey: name) { d.removeValue(forKey: key); UserDefaults.standard.set(d, forKey: name) }
+        }
+        emit(["type": "walletLocked"])
+        walletRefresh()
+    }
     /// Create a wallet in ~/.xcoin through the CLI. Normal wallets get a
     /// one-time seed reveal for the paper backup; card wallets never reveal a
     /// seed by design (the backup is a duplicate card via `card-backup`).
     func walletCreate(name rawName: String, passphrase: String, card: Bool) {
         guard !walletBusy else {
-            emit(["type": "walletStatus", "state": "fail", "message": "Another wallet action is still running — wait for it to finish, then create."]); return
+            emit(["type": "error", "message": "Another wallet action is still running — wait for it to finish, then create."], menu: false); return
         }
         var name = rawName.trimmingCharacters(in: .whitespaces)
         if name.isEmpty { name = "wallet.mmm" }
@@ -497,17 +632,16 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         if card, passphrase.isEmpty {
             emit(["type": "walletStatus", "state": "fail", "message": "A card wallet needs a passphrase (it guards the card keys)."]); return
         }
-        walletBusy = true
+        let op = walletBegin()
         emit(["type": "walletStatus", "state": "working",
               "message": card ? "Provisioning — when asked, tap and HOLD the NEW card on the reader…" : "Creating \(name)…"])
         var args = ["--json", "--file", path, "new", "--offline"]
         if card { args.append("--card") }
-        WalletService.run(args, passphrase: passphrase, timeout: card ? 400 : 120) { [weak self] r in
-            guard let self else { return }
+        walletJob = WalletService.run(args, passphrase: passphrase, timeout: card ? cardTimeout : 120,
+                                      progress: { [weak self] line in self?.walletProgress(line, op: op) }) { [weak self] r in
+            guard let self, op == self.walletOp else { return }
             guard r.code == 0, WalletService.json(r)?["file"] != nil else {
-                self.walletBusy = false
-                self.emit(["type": "walletStatus", "state": "fail",
-                           "message": r.stderr.isEmpty ? "Could not create the wallet." : String(r.stderr.suffix(300))])
+                if self.walletCancelling { self.walletCancelled() } else { self.walletFail(self.cliFailure(r, "Could not create the wallet.")) }
                 return
             }
             // a new file at a used path: drop everything cached for the one it replaced
@@ -519,23 +653,22 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             var passes = self.walletPassCache(); passes[self.walletFileKey(path)] = !passphrase.isEmpty || card
             UserDefaults.standard.set(passes, forKey: "walletPassByFile")
             if card {
-                self.walletBusy = false
+                self.walletFinish("done")
                 self.emit(["type": "walletStatus", "state": "ok",
                            "message": "Card wallet created — the seed is sealed to the card and never shown. Make a duplicate with `xcoin-wallet-cli card-backup`. Unlock to derive its address (another tap)."])
                 self.walletRefresh()
                 return
             }
             // one-time seed reveal for the paper backup, then derive the address
-            WalletService.run(["--json", "--file", path, "seed", "--yes", "--no-clear"], passphrase: passphrase, timeout: 60) { r2 in
-                self.walletBusy = false
-                if r2.code == 0, let seed = WalletService.json(r2)?["seed"] as? String {
-                    self.emit(["type": "walletSeed", "name": name, "seed": seed])
-                } else {
+            self.walletJob = WalletService.run(["--json", "--file", path, "seed", "--yes", "--no-clear"], passphrase: passphrase, timeout: 60) { r2 in
+                guard op == self.walletOp else { return }
+                guard r2.code == 0, let seed = WalletService.json(r2)?["seed"] as? String else {
                     // Keep this warning on screen: no automatic unlock whose own status could replace it.
-                    self.emit(["type": "walletStatus", "state": "fail",
-                               "message": "Wallet created, but the seed reveal failed — run `xcoin-wallet-cli --file ~/.xcoin/\(name) seed` in Terminal to back it up NOW."])
+                    self.walletFail("Wallet created, but the seed reveal failed — run `xcoin-wallet-cli --file ~/.xcoin/\(name) seed` in Terminal to back it up NOW.")
                     return
                 }
+                self.walletFinish("done")
+                self.emit(["type": "walletSeed", "name": name, "seed": seed])
                 self.walletUnlock(passphrase: passphrase, remember: false)
             }
         }
@@ -547,16 +680,15 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         }
         // keys fixed now: the network or the file may change while the CLI runs
         let idx = walletIndex(for: sel.path), fileKey = walletFileKey(sel.path), addrKey = walletAddrKey(sel.path, idx)
-        walletBusy = true
+        let op = walletBegin()
         emit(["type": "walletStatus", "state": "working",
               "message": sel.card ? "Unlocking — tap your xCoin card on the NFC reader when prompted…" : "Unlocking the wallet…"])
-        WalletService.run(["--json", "--hrp", walletHrp(), "--file", sel.path, "address", "--index", String(idx)],
-                          passphrase: passphrase, timeout: sel.card ? 300 : 180) { [weak self] r in
-            guard let self else { return }
-            self.walletBusy = false
+        walletJob = WalletService.run(["--json", "--hrp", walletHrp(), "--file", sel.path, "address", "--index", String(idx)],
+                                      passphrase: passphrase, timeout: sel.card ? cardTimeout : 180,
+                                      progress: { [weak self] line in self?.walletProgress(line, op: op) }) { [weak self] r in
+            guard let self, op == self.walletOp else { return }
             guard r.code == 0, let d = WalletService.json(r), let addr = d["address"] as? String else {
-                self.emit(["type": "walletStatus", "state": "fail",
-                           "message": r.stderr.isEmpty ? "Could not unlock \(sel.name) — is one set up? Run `xcoin-wallet-cli new`." : String(r.stderr.suffix(300))])
+                if self.walletCancelling { self.walletCancelled() } else { self.walletFail(self.cliFailure(r, "Could not unlock \(sel.name) — is one set up? Run `xcoin-wallet-cli new`.")) }
                 return
             }
             var addrs = self.walletAddrCache(); addrs[addrKey] = addr
@@ -571,6 +703,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                 try? ForumCredential.save(passphrase, file: fileKey)
                 self.emit(["type": "forumCred", "saved": ForumCredential.exists()])   // the SETUP tab shares this credential
             }
+            self.walletFinish("done")
             self.emit(["type": "walletStatus", "state": "ok", "message": "Wallet unlocked."])
             self.walletRefresh()
         }
@@ -581,7 +714,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         guard validAddress(dest, hrp: hrp) else {
             emit(["type": "walletStatus", "state": "fail", "message": "The destination is not a valid witness v3 \(hrp)1r… address."]); return
         }
-        guard let amt = Double(amount), amt > 0 else {
+        guard let amt = Double(amount), amt.isFinite, amt > 0 else {
             emit(["type": "walletStatus", "state": "fail", "message": "Enter an amount above zero."]); return
         }
         let origin = profile["explorer"] ?? ""
@@ -594,39 +727,181 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                   "message": "Type this wallet's passphrase in the send form (only the default wallet can use the saved Touch ID passphrase)."]); return
         }
         let idx = walletIndex(for: sel.path)   // the key named in the prompt is the key that signs
-        walletBusy = true
-        emit(["type": "walletStatus", "state": "working", "message": "Waiting for Touch ID…"])
+        let addrKey = walletAddrKey(sel.path, idx), addr = walletAddrCache()[addrKey] ?? "", carried = walletCarriedCache()[addrKey] ?? ""
+        let op = walletBegin()
         // Touch ID (or the Mac password) approves EVERY send, saved passphrase or not;
         // the prompt shows the whole destination, so a look-alike can't pass for it.
-        ForumCredential.authenticate(reason: "send \(amount) XCF to \(dest.lowercased()) from \(sel.name), key index \(idx)") { [weak self] ok, why in
+        let authorize = { [weak self] in
             guard let self else { return }
-            guard ok else { self.walletBusy = false; self.emit(["type": "walletStatus", "state": "fail", "message": why ?? "Touch ID failed."]); return }
-            let pw = !formPass.isEmpty ? formPass : (credUsable ? ((try? ForumCredential.load()) ?? "") : "")
-            self.emit(["type": "walletStatus", "state": "working",
-                       "message": sel.card ? "Signing — tap your xCoin card on the NFC reader…" : "Signing offline and broadcasting…"])
-            Task { @MainActor in
-                // Never sign against an explorer serving a different chain.
-                if let stats = try? await self.get(origin + "/api/stats"), let ehrp = stats["hrp"] as? String, ehrp != hrp {
-                    self.walletBusy = false
-                    self.emit(["type": "walletStatus", "state": "fail", "message": "The explorer is serving a different network — fix the explorer URL in SETUP."]); return
-                }
-                WalletService.run(["--json", "--explorer", origin, "--hrp", hrp, "--file", sel.path, "send", dest, amount, "--index", String(idx), "--yes"],
-                                  passphrase: pw, timeout: sel.card ? 300 : 180) { r in
-                    self.walletBusy = false
-                    guard r.code == 0, let d = WalletService.json(r), (d["broadcast"] as? Bool) == true, let txid = d["txid"] as? String else {
-                        self.emit(["type": "walletStatus", "state": "fail",
-                                   "message": r.stderr.isEmpty ? "The send did not complete." : String(r.stderr.suffix(300))])
-                        return
+            self.emit(["type": "walletStatus", "state": "working", "message": "Waiting for Touch ID…"])
+            self.approve("send \(amount) XCF to \(dest.lowercased()) from \(sel.name), key index \(idx)", gate: self.walletAuth) { [weak self] ok, why in
+                guard let self, op == self.walletOp else { return }
+                guard ok else { self.walletFail(why ?? "Touch ID failed."); return }
+                let pw = !formPass.isEmpty ? formPass : (credUsable ? ((try? ForumCredential.load()) ?? "") : "")
+                self.emit(["type": "cardPrompt", "phase": "signing"])   // until the CLI reports its card wait
+                self.emit(["type": "walletStatus", "state": "working",
+                           "message": sel.card ? "Signing — tap your xCoin card on the NFC reader…" : "Signing offline and broadcasting…"])
+                Task { @MainActor in
+                    // Never sign against an explorer serving a different chain.
+                    if let stats = try? await self.get(origin + "/api/stats"), let ehrp = stats["hrp"] as? String, ehrp != hrp {
+                        guard op == self.walletOp else { return }
+                        self.walletFail("The explorer is serving a different network — fix the explorer URL in SETUP."); return
                     }
-                    self.emit(["type": "walletStatus", "state": "ok", "message": "Sent."])
-                    self.emit(["type": "walletSent", "txid": txid, "fee": d["fee"] as? String ?? "?",
-                               "vsize": d["vsize"] as? Int ?? 0, "change": d["change"] as? String ?? "0"])
-                    self.walletRefresh()
+                    guard op == self.walletOp else { return }   // cancelled during the explorer check
+                    self.walletSendRun(["--json", "--explorer", origin, "--hrp", hrp, "--file", sel.path, "send", dest, amount, "--index", String(idx), "--split", "--yes"],
+                                       passphrase: pw, card: sel.card, op: op, from: addr, explorer: origin)
                 }
             }
         }
+        // More than the balance on screen: refused before Touch ID and the tap, but only if a
+        // fresh read agrees (coins may have arrived since); an unreadable one leaves it to the CLI.
+        guard let want = sats(xcf: amount), let cached = walletSpendable[addr], want >= cached else { authorize(); return }
+        emit(["type": "walletStatus", "state": "working", "message": "Checking the balance…"])
+        Task { @MainActor in
+            let fresh = await self.freshSpendable(addr, carried: carried, origin: origin)
+            guard op == self.walletOp else { return }   // cancelled meanwhile
+            if let fresh {
+                self.walletSpendable[addr] = fresh
+                if want >= fresh {
+                    self.walletFinish("done")
+                    self.emit(["type": "walletStatus", "state": "fail", "message": want > fresh
+                        ? "\(amount) XCF is more than this wallet's spendable balance (\(xcfText(fresh)) XCF at key index \(idx)). Nothing was signed."
+                        : "\(amount) XCF is this wallet's whole spendable balance — leave room for the network fee. Nothing was signed."])
+                    return
+                }
+            }
+            authorize()
+        }
+    }
+    /// Spendable sats of a key's two-leaf and carried addresses, read now; nil if a read fails.
+    func freshSpendable(_ addr: String, carried: String, origin: String) async -> Int? {
+        var total = 0
+        for a in carried.isEmpty || carried == addr ? [addr] : [addr, carried] {
+            guard let u = try? await get(origin + "/api/utxos/" + a), let t = utxoSums(u), let s = sum(total, t.spendable) else { return nil }
+            total = s
+        }
+        return total
+    }
+    /// --split plans a large payment as several transactions, all signed after ONE
+    /// unlock (one tap). A CLI too old for it rejects the flag before any card wait.
+    func walletSendRun(_ args: [String], passphrase: String, card: Bool, op: Int, from address: String = "", explorer: String = "") {
+        let events = args.contains("--split")
+        lastSendShown = nil; walletSendFrom = (address, explorer); explorersUsed.insert(explorer)
+        // kept from the start: MMM may die mid-broadcast; a CLI without events may broadcast at any time
+        UserDefaults.standard.set(["time": Date().timeIntervalSince1970, "address": address, "explorer": explorer, "committed": !events, "txids": [String]()], forKey: "walletLastSend")
+        walletJob = WalletService.run(args, passphrase: passphrase, timeout: card ? cardTimeout : 180,
+                                      progress: { [weak self] line in self?.walletProgress(line, op: op) }) { [weak self] r in
+            guard let self, op == self.walletOp else { return }
+            if r.code == 2, !self.walletCancelling, events, r.stderr.contains("unrecognized arguments: --split") {
+                self.walletSendRun(args.filter { $0 != "--split" }, passphrase: passphrase, card: card, op: op, from: address, explorer: explorer); return
+            }
+            self.walletSendDone(r, events: events)
+            self.quitIfReported()
+        }
+    }
+    func walletSendNote(_ changes: [String: Any]) {
+        var d = UserDefaults.standard.dictionary(forKey: "walletLastSend") ?? [:]
+        d.merge(changes) { $1 }
+        UserDefaults.standard.set(d, forKey: "walletLastSend")
+    }
+    /// The outcome, kept as soon as it is known: a quit may follow at once.
+    func walletSendOutcome(_ outcome: String, _ message: String, txids: [String] = [], receipt: [String: Any]? = nil) {
+        var o: [String: Any] = ["outcome": outcome, "message": message, "txids": txids, "partial": outcome == "partial",
+                                "unsent_txids": receipt?["unsent_txids"] ?? [String](), "done": Date().timeIntervalSince1970, "quit": quitPending]
+        if let receipt { o["receipt"] = receipt }
+        walletSendNote(o)
+    }
+    /// At launch: a send MMM died during (committed, no outcome) is reported on every launch
+    /// until the next send; one that ended while MMM was quitting, once.
+    func lastSendAtLaunch() {
+        guard let last = UserDefaults.standard.dictionary(forKey: "walletLastSend") else { return }
+        // Any send whose CLI started but whose outcome never got recorded: even before broadcast-begin
+        // was read, the line may have reached the pipe just before MMM died and the orphan went on.
+        let unreported = last["outcome"] == nil
+        guard unreported || (last["quit"] as? Bool == true && last["outcome"] as? String != "sent") else { return }
+        lastSendShown = last
+        if let e = last["explorer"] as? String { explorersUsed.insert(e) }
+        if !unreported { walletSendNote(["quit": false]) }
+    }
+    func emitLastSend(_ last: [String: Any]) {
+        let addr = last["address"] as? String ?? ""
+        guard last["outcome"] != nil else {
+            emit(["type": "sendInterrupted", "address": addr, "explorer": last["explorer"] ?? "", "txids": last["txids"] ?? [String](),
+                  "message": (last["committed"] as? Bool == true
+                      ? "MMM was closed while a send was broadcasting. Check this wallet on the explorer before sending again."
+                      : "MMM was closed while a send was being prepared. It most likely did not go out, but check this wallet on the explorer before sending again.")
+                      + (addr.isEmpty ? "" : "\nWallet: " + addr)], menu: false)
+            return
+        }
+        if var r = last["receipt"] as? [String: Any] { r["type"] = "walletSent"; r["relaunch"] = true; emit(r, menu: false) }
+        emit(["type": "error", "message": "MMM quit as its last send ended: " + (last["message"] as? String ?? "")], menu: false)
+    }
+    /// The deferred quit goes on once the committed send is reported and recorded.
+    func quitIfReported() {
+        guard let reply = quitReply, !sendCommitted else { return }
+        quitReply = nil; reply()
+    }
+    /// Report exactly what went out, CANCEL or not: every txid the CLI (or, if it died, its
+    /// broadcast events) reported; for a partial send how many of how many, why, and the
+    /// txid whose broadcast result is unknown. "Nothing was sent" only before broadcast-begin
+    /// of a CLI that reports it (`events`: one too old for --split reports nothing).
+    func walletSendDone(_ r: WalletService.CLIResult, events: Bool = true) {
+        let json = WalletService.json(r), d = json ?? [:], out = (d["broadcast"] as? Bool) == true
+        var txids = out ? (d["txids"] as? [String]) ?? (d["txid"] as? String).map { [$0] } ?? [] : []
+        if txids.isEmpty { txids = walletSentIds }   // no JSON: what the backend had accepted, per event
+        let total = max((d["transactions"] as? Int) ?? walletTxTotal, txids.count, 1)
+        let complete = r.code == 0 && out && (d["partial"] as? Bool) != true && txids.count >= total
+        let failure = r.code == 0 ? "The send did not complete." : cliFailure(r, "The send did not complete.")
+        // no JSON, no "error:" line: the CLI never said how it ended (backstop, crash, a lost cancel race); its prompts are no answer
+        let silent = json == nil && !r.stderr.contains("error: ")
+        let unknown = " — MMM cannot tell whether " + (txids.isEmpty ? "a transaction" : "any other transaction") + " went out. Check this wallet on the explorer before sending again."
+        defer { walletRefresh() }
+        guard !txids.isEmpty else {
+            if walletCancelling, !walletCommitted, events {
+                walletSendOutcome("cancelled", "Cancelled — nothing was sent."); walletCancelled("Cancelled — nothing was sent."); return
+            }
+            // stopped after broadcast-begin, or a CLI that never says how far it got: nothing is known either way
+            let began = events ? " after its broadcast began" : ""
+            let message = silent && (walletCommitted || walletCancelling || !events)
+                ? (walletCancelling ? "Cancelled" + (events ? " as the broadcast began" : "") : r.timedOut ? "The wallet CLI did not finish in time and was stopped" + began : "The send stopped" + began) + unknown
+                : failure
+            walletSendOutcome("failed", message); walletFail(message)
+            return
+        }
+        let why = d["broadcast_error"] as? String ?? (silent ? (r.timedOut ? "the wallet CLI did not finish in time and was stopped" : "the wallet CLI stopped without a final report") + unknown : failure)
+        walletFinish(complete ? "done" : "failed")
+        var sent: [String: Any] = ["type": "walletSent", "txid": txids[0], "txids": txids, "transactions": total, "partial": !complete, "explorer": walletSendFrom.explorer,
+                                   "amount": d["amount"] as? String ?? "", "fee": d["fee"] as? String ?? "", "vsize": d["vsize"] as? Int ?? 0, "change": d["change"] as? String ?? ""]
+        if !complete {
+            sent["broadcast_error"] = why
+            if let u = d["unsent_txids"] as? [String], !u.isEmpty { sent["unsent_txids"] = u }   // the first: result unknown
+        }
+        let message = complete ? (walletCancelling ? "The cancel came too late: sent." : "Sent.") : "Sent \(txids.count) of \(total) transactions: \(why)"
+        walletSendOutcome(complete ? "sent" : "partial", message, txids: txids, receipt: sent)
+        if complete { emit(["type": "walletStatus", "state": "ok", "message": message]) }
+        emit(sent)
+        if !complete { emit(["type": "walletStatus", "state": "fail", "message": message]) }
     }
 
+    /// SETUP's Touch ID sign-in with the saved passphrase.
+    func loginTouch() {
+        // the banner and the card reader belong to a running wallet action
+        guard !walletBusy else {
+            emit(["type": "loginStatus", "state": "fail", "message": "A wallet action is running (it may be waiting for Touch ID or your card). Let it finish or CANCEL it, then sign in."]); return
+        }
+        guard !loginAuth.pending else { return }   // its prompt is already up
+        // sign with the file the saved passphrase belongs to, not whatever is default now
+        let bound = ForumCredential.file, wallet = walletFiles().first { walletFileKey($0.path) == bound }?.path
+        if bound != nil, wallet == nil {
+            emit(["type": "loginStatus", "state": "fail", "message": "The saved passphrase belongs to a wallet file that has since changed or moved. Type the passphrase to sign in, or Forget the saved one."]); return
+        }
+        approve("sign in to MineDifferent with your saved wallet passphrase", gate: loginAuth) { [weak self] ok, why in
+            guard let self else { return }
+            if !self.walletBusy { self.emit(["type": "cardPrompt", "phase": ok ? "done" : "failed"]) }   // else a send started since owns the banner
+            if ok, let pw = try? ForumCredential.load() { self.forumLogin(passphrase: pw, remember: false, wallet: wallet) }
+            else { self.emit(["type": "loginStatus", "state": "fail", "message": why ?? "Touch ID failed."]) }
+        }
+    }
     // Sign in to MineDifferent with the bundled engine: `NerdMiner login` mints a
     // challenge, the wallet CLI signs it with key index 101 (the forum identity),
     // and we open the one-time link it prints. The passphrase travels only over
@@ -688,8 +963,18 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     func applicationShouldHandleReopen(_ sender:NSApplication, hasVisibleWindows flag:Bool) -> Bool { showFullWindow(); return true }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication) -> Bool { false }
     /// Children die first, while the app still runs: each wallet/login child's whole
-    /// process tree, SIGKILL for whatever ignores SIGTERM for a second.
-    func applicationShouldTerminate(_ sender:NSApplication) -> NSApplication.TerminateReply { process?.terminate(); WalletService.terminateAll(grace: 1); return .terminateNow }
+    /// process tree, SIGKILL for whatever ignores SIGTERM for a second. A committed send is
+    /// left to finish (stopping it could hide whether a transaction went out): MMM quits
+    /// once it is reported and recorded.
+    func applicationShouldTerminate(_ sender:NSApplication) -> NSApplication.TerminateReply {
+        process?.terminate(); WalletService.terminateAll(grace: 1)
+        guard sendCommitted else { return .terminateNow }
+        quitPending = true; quitReply = { sender.reply(toApplicationShouldTerminate: true) }
+        emit(["type": "cardPrompt", "phase": "broadcasting", "n": walletTxTotal, "i": walletSentIds.count, "quitting": true], menu: false)
+        menuBar?.update(["type": "error", "message": "Finishing a broadcast — MMM quits when it is done."])
+        showFullWindow()
+        return .terminateLater
+    }
     func applicationWillTerminate(_ notification:Notification) { timer?.invalidate(); statsTimer?.invalidate(); menuBar?.invalidate(); process?.terminate(); loginProcess?.terminate(); WalletService.terminateAll() }
     @MainActor func refreshMiner() {
         guard let owner = process, !statsBusy else { return }
@@ -758,6 +1043,63 @@ func startupSettingsComplete(_ p:[String:String]) -> Bool {
           p["host",default:""].range(of:"^[a-zA-Z0-9.-]+$",options:.regularExpression) != nil,
           let port = UInt16(p["port",default:""]), port > 0 else { return false }
     return true
+}
+/// One stderr line of the wallet CLI's XCOIN_EVENTS protocol → the page's cardPrompt,
+/// plus the txid a broadcast event reports. Other lines, and "done" (the exit code
+/// decides done or failed), → nil.
+func cliEvent(_ line: String) -> (prompt: [String: Any], txid: String?)? {
+    guard let at = line.range(of: "XCOIN-EVENT ") else { return nil }
+    let f = line[at.upperBound...].split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\r" }).map(String.init)
+    guard let kind = f.first else { return nil }
+    let i = f.count > 1 ? Int(f[1]) : nil, n = f.count > 2 ? Int(f[2]) : nil
+    switch kind {
+    case "card-wait":
+        let s = f.count > 1 ? Double(f[1]).flatMap { $0.isFinite ? Int(min(300, max(1, $0)).rounded()) : nil } : nil
+        return (["type": "cardPrompt", "phase": "tap", "seconds": s ?? 60], nil)
+    case "card-ok": return (["type": "cardPrompt", "phase": "signing", "cardRead": true], nil)
+    case "signing":
+        guard let i, let n, i >= 1, i <= n else { return nil }
+        return (["type": "cardPrompt", "phase": "signing", "i": i, "n": n], nil)
+    case "broadcast-begin":   // i is its n: the send can no longer be cancelled
+        guard let i, i >= 1 else { return nil }
+        return (["type": "cardPrompt", "phase": "broadcasting", "n": i], nil)
+    case "broadcast":
+        guard let i, let n, i >= 1, i <= n, f.count > 3, f[3].range(of: "^[0-9a-fA-F]{64}$", options: .regularExpression) != nil else { return nil }
+        return (["type": "cardPrompt", "phase": "broadcasting", "i": i, "n": n], f[3].lowercased())
+    default: return nil
+    }
+}
+/// The CLI's card-wait budget: XCOIN_CARD_TIMEOUT (5…300 s), else 60 s.
+func cardWaitBudget(_ env: [String: String]) -> Int {
+    env["XCOIN_CARD_TIMEOUT"].flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }.map { min(300, max(5, $0)) } ?? 60
+}
+/// A failed CLI run in its own words: stderr without XCOIN-EVENT lines, from its
+/// first "error:" line on when it printed one (prompts before it are noise). Whole,
+/// not a 300-character tail: the notice scrolls.
+func cliErrorText(_ stderr: String, fallback: String) -> String {
+    let lines = stderr.components(separatedBy: "\n").filter { !$0.contains("XCOIN-EVENT ") }
+    let from = lines.firstIndex { $0.contains("error: ") } ?? 0
+    let text = lines[from...].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    return text.isEmpty ? fallback : text.count > 4000 ? "…" + text.suffix(4000) : text
+}
+/// An explorer link: `base` an http(s) URL with a host and no user, query or fragment,
+/// `path` one of the page's /tx|address|block/<id> links; else nil.
+func explorerURL(_ base: String, _ path: String) -> URL? {
+    guard let b = URLComponents(string: base), ["http", "https"].contains(b.scheme?.lowercased() ?? ""), !(b.host ?? "").isEmpty,
+          b.user == nil, b.password == nil, b.query == nil, b.fragment == nil,
+          path.range(of: "^/(tx|address|block)/[0-9A-Za-z]{1,128}$", options: .regularExpression) != nil else { return nil }
+    return URL(string: base + path)
+}
+/// "12.5" → 1_250_000_000, exactly (no floating point); nil for anything else.
+func sats(xcf s: String) -> Int? {
+    guard !s.isEmpty, s != ".", s.range(of: "^[0-9]{0,8}(\\.[0-9]{0,8})?$", options: .regularExpression) != nil else { return nil }
+    let parts = s.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
+    let frac = parts.count > 1 ? String(parts[1]).padding(toLength: 8, withPad: "0", startingAt: 0) : "0"
+    return (Int(parts[0]) ?? 0) * 100_000_000 + (Int(frac) ?? 0)
+}
+func xcfText(_ sats: Int) -> String {
+    let frac = String(format: "%08ld", sats % 100_000_000).replacingOccurrences(of: "0+$", with: "", options: .regularExpression)
+    return String(sats / 100_000_000) + (frac.isEmpty ? "" : "." + frac)
 }
 @main
 struct MMMMain {

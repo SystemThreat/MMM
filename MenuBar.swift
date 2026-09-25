@@ -12,6 +12,7 @@ final class MenuBarController: NSObject {
     let stop = NSButton(title: "STOP MINING", target: nil, action: nil)
     var onShow: (() -> Void)?
     var onStop: (() -> Void)?
+    var onQuit: (() -> Void)?
     var animation: Timer?
     var frame = 0
     private lazy var pickaxeFrames = (0..<16).map { menuBarPickaxe(angle:26 * sin(Double($0) * .pi / 8)) }
@@ -71,7 +72,7 @@ final class MenuBarController: NSObject {
     }
     @objc func showFull() { popover.performClose(nil); onShow?() }
     @objc func stopMining() { stop.isEnabled = false; state.stringValue = "STOPPING…"; onStop?() }
-    @objc func quitApp() { NSApp.terminate(nil) }
+    @objc func quitApp() { onQuit?() }
     func update(_ event:[String:Any]) {
         let type = event["type"] as? String ?? ""
         switch type {

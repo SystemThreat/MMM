@@ -49,15 +49,18 @@ enum ForumCredential {
     static func forget() { SecItemDelete(query as CFDictionary); file = nil }
     /// Touch ID, falling back to the Mac password — never skipped. The reason
     /// is shown in the system prompt, so callers say exactly what is approved.
-    static func authenticate(reason: String = "sign in to MineDifferent with your saved wallet passphrase", _ done: @escaping (Bool, String?) -> Void) {
+    /// The returned context's invalidate() dismisses the prompt (done then fails).
+    @discardableResult
+    static func authenticate(reason: String = "sign in to MineDifferent with your saved wallet passphrase", _ done: @escaping (Bool, String?) -> Void) -> LAContext {
         let ctx = LAContext()
         var err: NSError?
         guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &err) else {
-            done(false, err?.localizedDescription ?? "Touch ID is not available on this Mac."); return
+            done(false, err?.localizedDescription ?? "Touch ID is not available on this Mac."); return ctx
         }
         ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { ok, e in
             DispatchQueue.main.async { done(ok, ok ? nil : (e?.localizedDescription ?? "authentication failed")) }
         }
+        return ctx
     }
     private static func error(_ status: OSStatus) -> NSError {
         NSError(domain: NSOSStatusErrorDomain, code: Int(status), userInfo: [NSLocalizedDescriptionKey: "The wallet passphrase could not be accessed in Keychain. (\(status))"])

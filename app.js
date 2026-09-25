@@ -1,5 +1,5 @@
 'use strict';
-const $=id=>document.getElementById(id), send=(action,extra={})=>{if(action!=='walletRefresh')noticeSticky=false;window.webkit?.messageHandlers.native.postMessage({action,...extra})};
+const $=id=>document.getElementById(id), send=(action,extra={})=>{if(!['walletRefresh','copy','open'].includes(action))noticeSticky=false;window.webkit?.messageHandlers.native.postMessage({action,...extra})};
 let profile={}, miner={}, chain={}, running=false, history=[], noticeSticky=false, pendingProfile=null, poolNote='', engineError='';
 let startAfterSave=false;
 let blockData=[], minerData=[], blockPage=0, minerPage=0, blockRevision=0, minerRevision=0;
@@ -9,7 +9,13 @@ const age=t=>!t?'—':`${Math.max(0,Math.floor((Date.now()/1000-t)/60))}m`;
 function el(tag,text,cls){const e=document.createElement(tag);e.textContent=text??'';if(cls)e.className=cls;return e}
 function notice(s,sticky){if(noticeSticky&&!sticky)return;$('notice').textContent=s;noticeSticky=!!sticky}
 const marks=new Map();function mark(a){let p=marks.get(a);if(!p){p=identiconSvg(a,32).catch(()=>'');marks.set(a,p);if(marks.size>500)marks.delete(marks.keys().next().value)}return p}
-async function person(address,worker){const e=el('span','','person');if(address){const icon=el('span');try{icon.innerHTML=await mark(address)}catch{}e.append(icon)}const d=el('div');if(worker)d.append(el('b',worker));const a=el('a',short(address));a.href='#';a.title=address||'';a.onclick=ev=>{ev.preventDefault();if(address)send('open',{path:'/address/'+encodeURIComponent(address)})};const line=el('span','','addr-line');line.append(a);d.append(line);if(address){const c=el('button','⧉ COPY','copy-btn');c.type='button';c.title='Copy the full address';c.onclick=ev=>{ev.preventDefault();ev.stopPropagation();send('copy',{text:address});c.textContent='✓ COPIED';c.classList.add('done');clearTimeout(c._t);c._t=setTimeout(()=>{c.textContent='⧉ COPY';c.classList.remove('done')},1400)};line.append(c)}e.append(d);return e}
+async function person(address,worker){const e=el('span','','person');if(address){const icon=el('span');try{icon.innerHTML=await mark(address)}catch{}e.append(icon)}const d=el('div');if(worker)d.append(el('b',worker));const a=el('a',short(address));a.href='#';a.title=address||'';a.onclick=ev=>{ev.preventDefault();if(address)send('open',{path:'/address/'+encodeURIComponent(address)})};const line=el('span','','addr-line');line.append(a);d.append(line);if(address)line.append(copyBtn(address,'Copy the full address'));e.append(d);return e}
+function linkLine(text,full,path,origin,what){const line=el('span','','addr-line'),a=el('a',text);a.href='#';a.title=full;a.onclick=e=>{e.preventDefault();send('open',origin?{path,origin}:{path})};line.append(a,copyBtn(full,'Copy the full '+what));return line}
+function txLine(id,origin){return linkLine(id.slice(0,16)+'…'+id.slice(-6),id,'/tx/'+id,origin,'txid')}
+function copyBtn(text,title){const c=el('button','⧉ COPY','copy-btn');c.type='button';c.title=title;c.onclick=ev=>{ev.preventDefault();ev.stopPropagation();send('copy',{text});c.textContent='✓ COPIED';c.classList.add('done');clearTimeout(c._t);c._t=setTimeout(()=>{c.textContent='⧉ COPY';c.classList.remove('done')},1400)};return c}
+// the receipt grows to fit; when the window is too short it scrolls and says so
+function showReceipt(partial,...parts){const r=$('walletReceipt');r.hidden=false;r.scrollTop=0;r.classList.toggle('partial',partial);r.replaceChildren(...parts);setTimeout(receiptFit)}
+function receiptFit(){const r=$('walletReceipt');r.classList.toggle('more',!r.hidden&&r.scrollHeight-r.scrollTop>r.clientHeight+2)}
 function render(){
  $('metrics').replaceChildren();for(const [label,value,note] of [['CHAIN HEIGHT',fmt(chain.height),'verified explorer tip'],['NETWORK HASH',chain.hashrate==null?'—':fmt(chain.hashrate/1e6,2)+' M','MH/s · chain estimate'],['ACCEPTED',fmt(miner.accepted),'this mining session'],['REJECTED',fmt(miner.rejected),'this mining session'],['BLOCKS FOUND',fmt(miner.blocks_found),'reported by the pool'],['MEMPOOL',fmt(chain.mempool),'pending transactions']]){const m=el('div','','metric');m.append(el('label',label),el('strong',value),el('small',note));$('metrics').append(m)}
  $('nerd').replaceChildren();for(const [k,v] of [['DAG epoch',miner.dag_epoch==null?'—':fmt(miner.dag_epoch)+(miner.dag_epoch_next_s>0?' · next in '+(miner.dag_epoch_next_s>=86400?fmt(miner.dag_epoch_next_s/86400,1)+' d':fmt(miner.dag_epoch_next_s/3600,1)+' h'):'')],['DAG size',miner.dag_bytes==null?'—':fmt(miner.dag_bytes/2**30,2)+' GiB'],['DAG traffic ≈',miner.dag_traffic_gbs==null?'—':fmt(miner.dag_traffic_gbs,2)+' GB/s'],['Total hashes',fmt(miner.total_hashes)],['Best share',miner.best_share_bits==null?'—':miner.best_share_bits>0?miner.best_share_bits+' bits':'waiting for first share'],['Pool difficulty',fmt(miner.difficulty,8)],['Chain difficulty',fmt(chain.difficulty,8)],['System memory',miner.system_memory_bytes==null?'—':fmt(miner.system_memory_bytes/2**30,0)+' GiB']]){const row=el('div');row.append(el('dt',k),el('dd',v));$('nerd').append(row)}
@@ -36,10 +42,25 @@ window.receive=async msg=>{
  case 'loginStatus':$('loginState').textContent=msg.state==='running'?'SIGNING IN…':msg.state==='ok'?'✓ SIGNED IN — CHECK YOUR BROWSER':msg.state==='idle'?'NOT SIGNED IN':'✗ FAILED — SEE ENGINE LOG';$('loginBtn').disabled=msg.state==='running';if(msg.message)notice(msg.message,msg.state==='fail');break;
  case 'forumCred':forumSaved=!!msg.saved;renderForum();break;
  case 'wallet':wallet=msg.data;renderWallet();break;
- case 'walletStatus':walletBusy=msg.state==='working';if(createPending||!$('view-create').hidden){$('createState').textContent=walletBusy?'WORKING…':msg.state==='ok'?'✓ DONE':'✗ FAILED';$('createBtn').disabled=walletBusy||wallet.cliFound===false;if(!walletBusy)createPending=false;if(msg.state==='ok')$('walletCreateForm').elements.name.value='';if(msg.message&&msg.state!=='fail')notice(msg.message)}$('walletState').textContent=walletBusy?'WORKING…':msg.state==='ok'?'✓ UNLOCKED':'✗ FAILED';if(msg.state==='fail')notice(msg.message||'Wallet action failed.',true);$('walletUnlockBtn').disabled=$('walletSendBtn').disabled=walletBusy;break;
- case 'nuked':pendingProfile=null;walletBusy=createPending=false;for(const id of ['settings','loginForm','walletUnlockForm','walletSendForm','walletWatchForm','walletCreateForm'])$(id)?.reset();wallet={};profile={};$('walletReceipt').hidden=true;$('walletSeedBox').hidden=true;$('walletIdx').value=0;forumSaved=false;renderForum();$('walletState').textContent='LOCKED';$('loginState').textContent='NOT SIGNED IN';selectTab('setup');break;
+ case 'walletStatus':walletBusy=msg.state==='working';if(createPending||!$('view-create').hidden){$('createState').textContent=walletBusy?'WORKING…':msg.state==='ok'?'✓ DONE':'✗ FAILED';$('createBtn').disabled=walletBusy||wallet.cliFound===false;if(!walletBusy)createPending=false;if(msg.state==='ok')$('walletCreateForm').elements.name.value='';if(msg.message&&msg.state!=='fail')notice(msg.message)}$('walletState').textContent=walletBusy?'WORKING…':msg.state==='ok'?'✓ UNLOCKED':'✗ FAILED';if(msg.state==='fail')notice(msg.message||'Wallet action failed.',true);$('walletUnlockBtn').disabled=$('walletSendBtn').disabled=$('walletLockBtn').disabled=walletBusy;break;
+ case 'nuked':pendingProfile=null;walletBusy=createPending=false;cardPrompt({phase:'done'});for(const id of ['settings','loginForm','walletUnlockForm','walletSendForm','walletWatchForm','walletCreateForm'])$(id)?.reset();wallet={};profile={};$('walletReceipt').hidden=true;$('walletSeedBox').hidden=true;$('walletIdx').value=0;forumSaved=false;renderForum();$('walletState').textContent='LOCKED';$('loginState').textContent='NOT SIGNED IN';selectTab('setup');break;
  case 'walletSeed':{walletBusy=createPending=false;$('createState').textContent='✓ DONE';const b=$('walletSeedBox');b.hidden=false;b.replaceChildren(el('b','MASTER SEED OF '+msg.name+' — WRITE IT ON PAPER NOW. It is shown ONCE and never again; anyone with it controls the wallet.'),el('code',msg.seed),(()=>{const d=el('button','I WROTE IT DOWN — OPEN WALLET ↗');d.type='button';d.onclick=()=>{b.replaceChildren();b.hidden=true;$('walletCreateForm').elements.name.value='';selectTab('wallet')};return d})());break}
- case 'walletSent':{walletBusy=false;$('walletUnlockBtn').disabled=$('walletSendBtn').disabled=false;const r=$('walletReceipt');r.hidden=false;const a=el('a',msg.txid.slice(0,20)+'…');a.href='#';a.onclick=e=>{e.preventDefault();send('open',{path:'/tx/'+msg.txid})};r.replaceChildren(el('b','SENT ✓ '),a,el('span',' · fee '+msg.fee+' XCF · '+msg.vsize+' vB'));$('walletSendForm').reset();notice('Sent. The explorer shows it once the next block confirms it.');break}
+ case 'walletSent':{if(msg.relaunch)selectTab('wallet');walletBusy=false;$('walletUnlockBtn').disabled=$('walletSendBtn').disabled=$('walletLockBtn').disabled=false;const ids=msg.txids?.length?msg.txids:[msg.txid],n=Math.max(msg.transactions||0,ids.length),head=el('div','','wr-head');
+  head.append(el('b',msg.partial?`⚠ SENT ${ids.length} OF ${n} TRANSACTIONS`:n>1?`SENT ✓ ${n} TRANSACTIONS`:'SENT ✓'));if(msg.amount)head.append(el('span',' · '+msg.amount+' XCF'));if(msg.fee)head.append(el('span',' · fee '+msg.fee+' XCF · '+msg.vsize+' vB'));
+  // the uncertain txid may have gone out (lost connection): never under NOT BROADCAST
+  const txList=(label,list,cls)=>{const d=el('div','',cls);if(label)d.append(el('small',label,'wr-label'));for(const id of list)d.append(txLine(id,msg.explorer));return d};
+  const unsent=msg.unsent_txids||[],stop=el('small','STOPPED: '+(msg.broadcast_error||'the send did not finish'),'wr-miss'),rest=[];
+  if(!msg.partial)rest.push(txList('',ids,'wr-list'));
+  else{if(unsent[0])rest.push(el('small','Check this txid on the explorer before re-sending — the connection may have dropped after it went out.','wr-unsure'),txLine(unsent[0],msg.explorer),stop);
+   else rest.push(stop,el('small','Check the explorer before re-sending the rest — the connection may have dropped after a transaction went out.','wr-unsure'));
+   rest.push(txList('SENT:',ids,'wr-list'));if(unsent.length>1)rest.push(txList('NOT BROADCAST:',unsent.slice(1),'wr-list wr-never'))}
+  showReceipt(!!msg.partial,head,...rest);
+  $('walletSendForm').reset();if(!msg.partial)notice(n>1?`Sent in ${n} transactions. The explorer shows them once the next block confirms them.`:'Sent. The explorer shows it once the next block confirms it.');break}
+ case 'sendInterrupted':{selectTab('wallet');const head=el('div','','wr-head'),rest=[el('small','Check this wallet on the explorer before sending again — MMM cannot tell what went out.','wr-unsure')];head.append(el('b','⚠ MMM WAS CLOSED WHILE A SEND WAS BROADCASTING'));
+  if(msg.address)rest.push(linkLine(short(msg.address),msg.address,'/address/'+msg.address,msg.explorer,'address'));if(msg.txids?.length){const list=el('div','','wr-list');for(const id of msg.txids)list.append(txLine(id,msg.explorer));rest.push(el('small','Reported sent before it closed:','wr-miss'),list)}
+  showReceipt(true,head,...rest);notice(msg.message,true);break}
+ case 'walletLocked':$('walletReceipt').hidden=true;notice('Locked. UNLOCK again to send from this wallet — no restart needed.');break;
+ case 'cardPrompt':cardPrompt(msg);break;
  }
 };
 async function updateProfile(){$('networkLabel').textContent=profile.network==='mainnet'?'MAINNET / GENESIS VERIFIED BEFORE START':'TESTNET A / REHEARSAL';$('actionNote').textContent=profile.network==='mainnet'?'Uses the selected mainnet pool and genesis.':'Testnet rewards are rehearsal coins.';$('payout').replaceChildren(profile.address?await person(profile.address):el('span','Set your payout address below.'))}
@@ -64,7 +85,7 @@ $('blocksPrev').onclick=()=>{blockPage=Math.max(0,blockPage-1);renderBlocks()};$
 let logText='No mining session started.';
 function renderLog(){const lines=Math.max(1,Math.floor(($('log').clientHeight-16)/(parseFloat(getComputedStyle($('log')).lineHeight)||18)));$('log').textContent=logText.split('\n').filter(Boolean).slice(-lines).join('\n')}
 $('copyLog').onclick=()=>send('copy',{text:logText});$('minimize').onclick=()=>send('minimize');
-let resizeTick;window.addEventListener('resize',()=>{clearTimeout(resizeTick);resizeTick=setTimeout(()=>{renderBlocks();renderMiners();renderLog()},80)});
+let resizeTick;window.addEventListener('resize',()=>{clearTimeout(resizeTick);resizeTick=setTimeout(()=>{renderBlocks();renderMiners();renderLog();receiptFit()},80)});$('walletReceipt').onscroll=receiptFit;
 function applyTheme(dark){document.documentElement.dataset.theme=dark?'dark':'light';$('themeToggle').setAttribute('aria-checked',String(dark));$('themeLabel').textContent=dark?'DARK':'LIGHT';try{localStorage.setItem('mmm-theme',dark?'dark':'light')}catch{}}
 let initialTheme;try{initialTheme=localStorage.getItem('mmm-theme')}catch{}applyTheme(initialTheme?initialTheme==='dark':window.matchMedia('(prefers-color-scheme: dark)').matches);
 $('themeToggle').onclick=()=>applyTheme(document.documentElement.dataset.theme!=='dark');selectTab('dashboard');
@@ -103,6 +124,7 @@ async function renderWallet(){
   :'Touch ID approves every send. Signing is offline on this Mac; the explorer only relays.';
  const unlocked=!!wallet.walletAddress;
  $('walletState').textContent=wallet.cliFound===false?'✗ WALLET CLI NOT FOUND':unlocked?'✓ UNLOCKED':'LOCKED';
+ $('walletLockBtn').hidden=!unlocked||wallet.cliFound===false;$('walletLockBtn').disabled=walletBusy;
  $('walletUnlockForm').hidden=unlocked||wallet.cliFound===false;
  $('walletSendForm').hidden=!unlocked||wallet.cliFound===false;
  renderCreate();
@@ -132,4 +154,30 @@ $('walletSendForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.targe
 $('walletFileSel').onchange=e=>{$('walletReceipt').hidden=true;send('walletSelect',{file:e.target.value})};
 $('walletIdx').onchange=()=>{$('walletReceipt').hidden=true;send('walletSelect',{file:$('walletFileSel').value,index:Math.max(0,Number($('walletIdx').value)||0)})};
 $('walletBrowse').onclick=()=>send('walletBrowse');
+$('walletLockBtn').onclick=()=>send('walletLock');
 $('walletCreateForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);if(String(f.get('pass')||'')!==String(f.get('pass2')||'')){$('createState').textContent='✗ PASSPHRASES DIFFER';notice('Passphrases do not match.',true);return}$('walletSeedBox').hidden=true;createPending=true;send('walletCreate',{name:String(f.get('name')||'').trim(),passphrase:String(f.get('pass')||''),card:f.get('card')==='on'});e.target.elements.pass.value='';e.target.elements.pass2.value=''};
+// ── Card / Touch ID banner: the step the wallet CLI waits for, as a ticker; a countdown for the tap; CANCEL ──
+let cardTimer=0,cardDeadline=0,cardClockLong=false,cardShown='',cardPhase='done';
+const cardFinal=p=>p==='failed'||p==='cancelled';
+function cardText(m){switch(m.phase){
+ case 'touchid':return 'AUTHORIZE WITH TOUCH ID';
+ case 'tap':return 'TAP & HOLD YOUR XCOIN CARD FLAT ON THE READER';
+ case 'signing':return m.i?`SIGNING TRANSACTION ${m.i} OF ${m.n}`+(m.card?' — KEEP THE CARD ON THE READER':''):m.cardRead?'CARD READ ✓ — WORKING, PLEASE WAIT':'WORKING — PLEASE WAIT';
+ case 'broadcasting':return m.quitting?'FINISHING BROADCAST — MMM WILL QUIT WHEN IT IS DONE':m.i?`SENT ${m.i} OF ${m.n}`+(m.i<m.n?' — BROADCASTING THE REST':''):m.n>1?`BROADCASTING ${m.n} TRANSACTIONS`:'BROADCASTING';
+ case 'failed':return '✗ STOPPED — THE MESSAGE ABOVE SAYS WHY';
+ case 'cancelled':return 'CANCELLED';
+ default:return ''}}
+function cardClock(s){return cardClockLong?String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0'):String(s).padStart(2,'0')}
+function cardTick(){clearTimeout(cardTimer);const ms=cardDeadline-Date.now(),left=Math.max(0,Math.ceil(ms/1000)),c=$('cardCount');c.classList.toggle('up',!left);$('cardBanner').classList.toggle('up',!left);c.textContent=left?cardClock(left):'TIME UP — TAP OR CANCEL';if(left)cardTimer=setTimeout(cardTick,ms%1000||1000)}
+function cardPrompt(m){
+ const b=$('cardBanner'),text=cardText(m),end=cardFinal(m.phase);clearTimeout(cardTimer);cardPhase=m.phase;
+ if(!text){b.hidden=true;cardShown='';return}
+ b.hidden=false;b.dataset.phase=m.phase;b.classList.toggle('static',end);b.classList.remove('up');$('cardCount').classList.remove('up');$('cardCount').textContent='';
+ // two identical strips scrolled by -50%: the seam never shows; rebuilt only when the words change
+ if(text!==cardShown){cardShown=text;$('cardText').textContent=text;const reps=Math.max(2,Math.ceil(120/(text.length+3))),strip=()=>{const s=el('span','','cb-strip');for(let k=0;k<reps;k++)s.append(el('span',text),el('i','◆'));return s},t=$('cardTrack');t.style.animationDuration=Math.round(reps*(text.length+3)*0.13)+'s';t.replaceChildren(strip(),strip())}
+ // from broadcast-begin on Swift refuses CANCEL: stopping it could hide whether a transaction went out
+ const c=$('cardCancel'),locked=m.phase==='broadcasting';c.disabled=locked;c.textContent=end?'CLOSE ✕':locked?'BROADCASTING — CANNOT CANCEL':'CANCEL ✕';
+ if(m.phase==='tap'){const s=Math.min(300,Math.max(1,Math.round(Number(m.seconds))||60));cardClockLong=s>=60;cardDeadline=Date.now()+s*1000;cardTick()}
+ if(end)cardTimer=setTimeout(()=>{b.hidden=true;cardShown=''},4000);
+}
+$('cardCancel').onclick=()=>{if(cardPhase==='broadcasting')return;if(cardFinal(cardPhase)){clearTimeout(cardTimer);$('cardBanner').hidden=true;cardShown='';return}const c=$('cardCancel');c.disabled=true;c.textContent='CANCELLING…';send('walletCancel')};

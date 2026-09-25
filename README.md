@@ -46,6 +46,15 @@ placed in an argument list, an environment variable, or a log. If your mining
 payout address differs from the wallet's key 0, the tab shows both balances and
 says plainly which one a send draws from.
 
+Once a send starts broadcasting it can no longer be cancelled. Quitting MMM then
+(⌘Q, the menu bar, the Dock, logout, `kill`), however often, waits for it to
+finish, records its outcome (one that did not all go out is shown again on the
+WALLET tab at the next launch) and quits. A partial send's receipt lists its txids
+under SENT and NOT BROADCAST, and first the one whose broadcast result is unknown.
+If MMM dies mid-broadcast anyway (a crash, a force quit), the wallet CLI still
+finishes its broadcasts, and the next launch says so with the wallet address:
+check it on the explorer before sending again.
+
 ## Forum sign-in (MineDifferent)
 
 Setup tab → **SIGN IN TO MINEDIFFERENT**. One click mints a challenge, signs it
