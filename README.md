@@ -1,6 +1,6 @@
 # MMM — Nerd Stats Edition
 
-Native Mac miner for xCoin Ӿ (XID). Testnet A is retiring and testnet B is launching; mainnet genesis is November 1, 2026. Supply is capped at 100,000,000 XID, issued by "the Annual Tenth": a 6.25 / 12.5 / 25 XID warm-up, 50 XID per block to block 220,000, then 10% less every 110,000 blocks down to a 1.5 XID floor.
+Native Mac miner for xCoin Ӿ (XID). Mainnet is live since September 26, 2026 at 00:00 UTC (explorer: superknet.com); testnet A is retired. Supply is capped at 100,000,000 XID, issued by "the Annual Tenth": a 6.25 / 12.5 / 25 XID warm-up, 50 XID per block to block 220,000, then 10% less every 110,000 blocks down to a 1.5 XID floor.
 
 Native Apple Silicon macOS app wrapping the existing NerdMiner MetalDAG engine, with a local WebKit dashboard. macOS 14+ and Xcode Command Line Tools are required to build.
 
