@@ -697,7 +697,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         let keysBefore = card ? cardKeyFiles() : []
         emit(["type": "walletStatus", "state": "working",
               "message": card ? "Provisioning — when asked, tap and HOLD the NEW card on the reader…" : "Creating \(name)…"])
-        var args = ["--json", "--file", path, "new", "--offline"]
+        var args = ["--json", "--hrp", walletHrp(), "--file", path, "new", "--offline"]
         if card { args.append("--card") }
         walletJob = WalletService.run(args, passphrase: passphrase, timeout: card ? cardTimeout : 120,
                                       progress: { [weak self] line in self?.walletProgress(line, op: op) }) { [weak self] r in
