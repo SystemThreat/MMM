@@ -1,21 +1,49 @@
-MIT License
+MMM Source-Available License
+Version 1.0, effective 2026-09-26
 
-Copyright (c) 2026 דָּוִד
+Copyright (c) 2026 דָּוִד (SystemThreat). All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+MMM ("the Software") is proprietary software. Its source code is published so
+that anyone can inspect what runs on their Mac. Publication is not a grant of
+open-source rights.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. What you may do
+   a. Read, review and audit the source code.
+   b. Build the Software from this source on your own computer, and run that
+      build for your own personal use, including to confirm that an official
+      release matches this source.
+   c. Quote short excerpts in security reports, audits, reviews or discussion,
+      with a reference to this repository.
+   d. Report bugs and security issues, and propose changes through this
+      repository. By submitting a change you agree it may be used under this
+      license and any future license of the Software.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+2. What you may not do without written permission from the copyright holder
+   a. Redistribute the Software, in source or binary form, modified or not,
+      including re-hosting it or bundling it with other software.
+   b. Publish, distribute or sell modified versions or derivative works.
+   c. Use the Software, or any part of it, in a commercial product or service,
+      or offer it as a hosted service.
+   d. Remove or alter this license or any copyright notice.
+
+3. Third-party components keep their own licenses. The xCoin wallet CLI
+   bundled in the app (MIT) and the post-quantum cryptography sources it uses
+   (CC0 1.0) are not covered by this license; see their own notices.
+
+4. Earlier releases. Versions published before the effective date under the
+   MIT License remain available under that license for those versions only.
+   This license governs everything from the effective date on.
+
+5. No warranty. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+   KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+   NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR
+   OTHER LIABILITY ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR
+   ITS USE. Mining uses significant power and hardware; you are responsible
+   for its costs and for any coins you mine, hold or send.
+
+6. Termination. Any use outside section 1 ends your rights under this license
+   automatically.
+
+For permission beyond this license, contact the copyright holder through
+https://github.com/SystemThreat/MMM.

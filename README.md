@@ -26,7 +26,7 @@ The mini explorer reads `/api/stats`, `/api/network` and the eight latest `/api/
 
 Tetromino artwork reuses MineDifferent's HMAC-SHA256 / xorshift128 generator. Payout addresses seed the marks because the explorer does not provide the corresponding private-key-derived forum identity. Equal payout addresses have equal marks; mainnet and testnet address strings may have different marks.
 
-`Engine/` is a self-contained copy of the user's Miner sources, preserving its license. The only mining-protocol changes are stdin password support and safe JSON escaping / redaction of authorization. The original Miner directory is untouched. The native app uses local stats port 47476 to avoid the CLI's default companion port. Signing is local ad-hoc signing, not Apple notarization.
+`Engine/` is a self-contained copy of the user's Miner sources, under the same license as the app. The only mining-protocol changes are stdin password support and safe JSON escaping / redaction of authorization. The original Miner directory is untouched. The native app uses local stats port 47476 to avoid the CLI's default companion port. Signing is local ad-hoc signing, not Apple notarization.
 
 ## Automatic mining
 
@@ -149,3 +149,13 @@ The same thing from Terminal, if you prefer:
 ```
 ~/Applications/MMM.app/Contents/Resources/NerdMiner login
 ```
+
+## License
+
+MMM is **proprietary, source-available software** (see [LICENSE](LICENSE)). The code is
+public so anyone can inspect and audit what runs on their Mac, and build it to check that a
+release matches this source. Redistribution, modified versions and commercial use need
+written permission. Releases before 2026-09-26 were published under the MIT License and stay
+under it for those versions. The bundled wallet CLI (MIT) and its post-quantum crypto code
+(CC0) keep their own licenses.
+
