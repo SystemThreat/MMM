@@ -44,6 +44,18 @@ says why and offers MINE ANYWAY (runs until the schedule's verdict next changes)
 A manual STOP is never undone by the schedule, and while MMM is quitting (waiting for a send or a
 backup card to finish) nothing starts mining. The schedule is saved on change; NUKE clears it.
 
+## Wallets and backups
+
+MMM keeps wallets in `~/.xcoin` as `.mmm` files; each one holds your XID keys, encrypted with your passphrase. **Back up your wallet to somewhere off your Mac, such as a USB drive, as soon as you create it.** Without a backup, a lost or wiped Mac means lost coins.
+
+What a backup must contain depends on the wallet:
+
+- **No NFC card:** the `.mmm` file is the whole wallet. Back up that one file and remember your passphrase.
+- **Older one-file card wallets (`mmm5`):** the card's keys are sealed inside the `.mmm` file, so the file alone is enough, along with your card and passphrase.
+- **Card wallets MMM creates (`mmm2`, from the NEW WALLET tab):** MMM keeps each card's key in a separate file, `card-<uid>.auth`, next to the wallet in `~/.xcoin`, and uses it automatically. Your backup must include those files too, or the wallet can't be opened on another Mac.
+
+To restore, copy the files back into `~/.xcoin`, then open the wallet in the WALLET tab (tap your card if it has one). The files can't spend your coins by themselves: your card and passphrase are still required, so keep the card apart from the backup. The WALLET tab shows whether a card wallet has a backup card; MAKE BACKUP CARD creates one.
+
 ## Wallet tab — send XID
 
 The WALLET tab turns MMM into a spending wallet without ever holding a key.
