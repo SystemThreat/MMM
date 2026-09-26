@@ -192,7 +192,7 @@ $('walletFileSel').onchange=e=>{$('walletReceipt').hidden=true;send('walletSelec
 $('walletIdx').onchange=()=>{$('walletReceipt').hidden=true;send('walletSelect',{file:$('walletFileSel').value,index:Math.max(0,Number($('walletIdx').value)||0)})};
 $('walletBrowse').onclick=()=>send('walletBrowse');
 $('walletLockBtn').onclick=()=>send('walletLock');
-$('walletCreateForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);if(String(f.get('pass')||'')!==String(f.get('pass2')||'')){$('createState').textContent='✗ PASSPHRASES DIFFER';notice('Passphrases do not match.',true);return}$('walletSeedBox').hidden=true;createPending=true;send('walletCreate',{name:String(f.get('name')||'').trim(),passphrase:String(f.get('pass')||''),card:f.get('card')==='on'});e.target.elements.pass.value='';e.target.elements.pass2.value=''};
+$('walletCreateForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);if(String(f.get('pass')||'')!==String(f.get('pass2')||'')){$('createState').textContent='✗ PASSPHRASES DIFFER';notice('Passphrases do not match.',true);return}$('walletSeedBox').hidden=true;createPending=true;send('walletCreate',{name:String(f.get('name')||'').trim(),passphrase:String(f.get('pass')||''),card:f.get('card')==='on',oneFile:f.get('onefile')==='on'});e.target.elements.pass.value='';e.target.elements.pass2.value=''};
 // ── Card / Touch ID banner: the step the wallet CLI waits for, as a ticker; a countdown for the tap; CANCEL ──
 let cardTimer=0,cardDeadline=0,cardClockLong=false,cardShown='',cardPhase='done',cardTapAt=0,cardHintOn=false,cardWords='';
 const CARD_HINT='NOTHING DETECTED? UNPLUG THE READER, PLUG IT BACK IN, TAP AGAIN';

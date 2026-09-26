@@ -167,7 +167,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "walletLock": walletLock()
         case "nuke": nukeInputs()
         case "walletCreate":
-            walletCreate(name: b["name"] as? String ?? "", passphrase: b["passphrase"] as? String ?? "", card: b["card"] as? Bool ?? false)
+            walletCreate(name: b["name"] as? String ?? "", passphrase: b["passphrase"] as? String ?? "", card: b["card"] as? Bool ?? false,
+                         oneFile: b["oneFile"] as? Bool ?? false)
         case "walletWatchAdd": walletWatch(b["address"] as? String ?? "")
         case "walletWatchRemove":
             if let a = b["address"] as? String {
@@ -676,7 +677,9 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     /// Create a wallet in ~/.xcoin through the CLI. Normal wallets get a
     /// one-time seed reveal for the paper backup; card wallets never reveal a
     /// seed by design (the backup is a duplicate card via `card-backup`).
-    func walletCreate(name rawName: String, passphrase: String, card: Bool) {
+    /// oneFile: a normal wallet skips the seed reveal (the file is the backup); a card wallet
+    /// keeps its card keys inside the .mmm (mmm5-card), so no card-<uid>.auth file exists.
+    func walletCreate(name rawName: String, passphrase: String, card: Bool, oneFile: Bool = false) {
         guard !walletBusy else {
             emit(["type": "error", "message": "Another wallet action is still running — wait for it to finish, then create."], menu: false); return
         }
@@ -699,6 +702,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
               "message": card ? "Provisioning — when asked, tap and HOLD the NEW card on the reader…" : "Creating \(name)…"])
         var args = ["--json", "--hrp", walletHrp(), "--file", path, "new", "--offline"]
         if card { args.append("--card") }
+        if oneFile { args.append(card ? "--one-file" : "--no-reveal") }
         walletJob = WalletService.run(args, passphrase: passphrase, timeout: card ? cardTimeout : 120,
                                       progress: { [weak self] line in self?.walletProgress(line, op: op) }) { [weak self] r in
             guard let self, op == self.walletOp else { return }
@@ -720,10 +724,17 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                 let late = self.walletCancelling ? "The cancel came too late: the new card was already being written, and it finished. " : ""
                 self.walletFinish("done")
                 self.emit(["type": "walletStatus", "state": "ok",
-                           "message": late + "Card wallet created — the seed is sealed to the card and never shown. Make a backup card now. Unlock to derive its address (another tap)."])
-                self.emit(["type": "walletCardCreated", "name": name, "file": path], menu: false)
+                           "message": late + "Card wallet created — the seed is sealed to the card and never shown." + (oneFile ? " Its card keys are inside the .mmm: back up that one file, and make a backup card in Terminal: xcoin-wallet-cli --file \(path) card-backup." : " Make a backup card now.") + " Unlock to derive its address (another tap)."])
+                if !oneFile { self.emit(["type": "walletCardCreated", "name": name, "file": path], menu: false) }
                 self.walletRefresh()
                 self.quitIfReported()
+                return
+            }
+            if oneFile {
+                self.walletFinish("done")
+                self.emit(["type": "walletStatus", "state": "ok",
+                           "message": "\(name) created — the seed was not shown. Back up the .mmm file\(passphrase.isEmpty ? " (no passphrase: anyone with the file can open it)" : " and remember its passphrase")."])
+                self.walletUnlock(passphrase: passphrase, remember: false)
                 return
             }
             // one-time seed reveal for the paper backup, then derive the address
@@ -1173,7 +1184,9 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         }
         guard let f = walletFiles().first(where: { $0.path == file }), f.card else { return }
         guard f.format == "mmm2" else {
-            emit(["type": "error", "message": "\(f.name) is a dex-wallet-era card wallet: make its backup cards with dex-wallet-cli."], menu: false); return
+            let how = f.format.hasPrefix("mmm5") ? "\(f.name) keeps its card keys inside the file: make its backup card in Terminal (it asks the passphrase): xcoin-wallet-cli --file \(f.path) card-backup"
+                                                 : "\(f.name) is a dex-wallet-era card wallet: make its backup cards with dex-wallet-cli."
+            emit(["type": "error", "message": how], menu: false); return
         }
         let op = walletBegin(); walletBackingUp = true
         emit(["type": "walletStatus", "state": "working", "message": "Backup card for \(f.name): approve with Touch ID…"])
@@ -1456,6 +1469,10 @@ func cardStatusInfo(_ d: [String: Any]?, format: String) -> [String: Any] {
                               "cards": ((d["cards"] as? [[String: Any]]) ?? []).prefix(32).map { ["uid": text($0["uid"], 32), "label": text($0["label"], 40), "permanent": $0["permanent"] as? Bool ?? false, "created": text($0["created"], 32)] }]
     if let n = d["count"] as? Int, n >= 0 { out["count"] = n }
     if let f = d["family"] as? String { out["family"] = String(f.prefix(64)) }
+    if format == "mmm5" {   // its card keys sit in the file under the passphrase, which MMM does not hold for a backup
+        out["backup_supported"] = false
+        out["note"] = "One-file card wallet: make its backup card in Terminal, which asks the passphrase: xcoin-wallet-cli --file <this .mmm> card-backup"
+    }
     return out
 }
 /// The CLI's card-wait budget: XCOIN_CARD_TIMEOUT (5…300 s), else 60 s.
