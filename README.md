@@ -44,111 +44,15 @@ says why and offers MINE ANYWAY (runs until the schedule's verdict next changes)
 A manual STOP is never undone by the schedule, and while MMM is quitting (waiting for a send or a
 backup card to finish) nothing starts mining. The schedule is saved on change; NUKE clears it.
 
-## Wallets and backups
+## Wallets and the forum
 
-MMM keeps wallets in `~/.xcoin` as `.mmm` files; each one holds your XID keys, encrypted with your passphrase. **Back up your wallet to somewhere off your Mac, such as a USB drive, as soon as you create it.** Without a backup, a lost or wiped Mac means lost coins.
+MMM is a miner. Its tabs are DASHBOARD, BLOCKS, MINERS and SETUP; the WALLET, NEW WALLET and FORUM tabs were removed on 2026-10-23. Sending, receiving, making wallets and backup cards, and signing in to MineDifferent now happen in **XID Wallet for Mac** ([SystemThreat/apple-mac-xcoin-wallet-gui](https://github.com/SystemThreat/apple-mac-xcoin-wallet-gui)) or the xcoin-wallet CLI. MMM only needs the payout address you type in SETUP.
 
-What a backup must contain depends on the wallet:
+Wallet files MMM made earlier are untouched in `~/.xcoin` (and card keys in `~/.dex-wallet`); XID Wallet and the CLI open them.
 
-- **No NFC card:** the `.mmm` file is the whole wallet. Back up that one file and remember your passphrase.
-- **Older one-file card wallets (`mmm5`):** the card's keys are sealed inside the `.mmm` file, so the file alone is enough, along with your card and passphrase.
-- **Card wallets MMM creates (`mmm2`, from the NEW WALLET tab):** MMM keeps each card's key in a separate file, `card-<uid>.auth`, next to the wallet in `~/.xcoin`, and uses it automatically. Your backup must include those files too, or the wallet can't be opened on another Mac.
+## The hashrate chart
 
-To restore, copy the files back into `~/.xcoin`, then open the wallet in the WALLET tab (tap your card if it has one). The files can't spend your coins by themselves: your card and passphrase are still required, so keep the card apart from the backup. The WALLET tab shows whether a card wallet has a backup card; MAKE BACKUP CARD creates one.
-
-## Wallet tab — send XID
-
-The WALLET tab turns MMM into a spending wallet without ever holding a key.
-Balances are public reads of the configured explorer (`/api/utxos`); unlocking
-derives this Mac's wallet address (key index 0) through the bundled xcoin-wallet
-CLI, and every send is approved with Touch ID (or the Mac password). Signing
-happens in the CLI's offline keytool — the ML-DSA-65 witness v3 path validated
-against the node's own test vectors — and the explorer only relays the one
-signed transaction. The wallet passphrase travels exclusively over the child
-process's stdin, is stored (if you opt in) in the login Keychain, and is never
-placed in an argument list, an environment variable, or a log. If your mining
-payout address differs from the wallet's key 0, the tab shows both balances and
-says plainly which one a send draws from.
-
-Once a send starts broadcasting it can no longer be cancelled. Quitting MMM then
-(⌘Q, the menu bar, the Dock, logout, `kill`), however often, waits for it to
-finish, records its outcome (one that did not all go out is shown again on the
-WALLET tab at the next launch) and quits. A partial send's receipt lists its txids
-under SENT and NOT BROADCAST, and first the one whose broadcast result is unknown.
-If MMM dies mid-broadcast anyway (a crash, a force quit), the wallet CLI still
-finishes its broadcasts, and the next launch says so with the wallet address:
-check it on the explorer before sending again.
-
-When the explorer or node answers a send with a refusal (for example, the coins
-are already being spent by an earlier send that has not confirmed yet), nothing of
-it went out, and the receipt says so with certainty: NOT SENT — THE NETWORK REFUSED
-IT, with the reason in plain words and in full; the send form keeps what you typed
-so you can send again after the next block. If a later transaction of a split send
-is refused, the receipt lists what went out under SENT and the refused one and the
-rest under NOT SENT, again with the reason in plain words. Only a lost connection
-(no answer at all) keeps the "check this txid on the explorer" wording.
-
-The card banner counts down each tap. If nothing is read for 15 seconds it adds
-NOTHING DETECTED? UNPLUG THE READER, PLUG IT BACK IN, TAP AGAIN; if the reader resets
-the card while it is being read, the banner says so and the wallet CLI reads it
-again (never during a write) while you keep the card on the reader. That new wait
-gets its own countdown (and the same hint after 15 seconds), and the action's time
-limit grows by it. While the banner shows, Tab skips the buttons it covers (the
-WALLET header's buttons, BLOCKS' REFRESH, SETUP's auto-start box and NUKE, the
-dashboard's payout line); they come back when it closes.
-
-RECEIVE (in the WALLET header, beside LOCK, once unlocked) shows a QR code of the payment request
-`xcoin:<address>`, or `xcoin:<address>?amount=<xcf>` when an amount is typed (dot
-decimals, up to 8), with the request and the plain address to copy. MMM draws the
-QR itself with Core Image (error correction M, black on white with a quiet zone, in
-either theme); nothing goes over the network. While it is open, Tab stays inside it;
-Escape or CLOSE returns to the RECEIVE button. Going to another tab closes it.
-
-Card wallets show their backup state in the WALLET header, read with
-`card-status` (no tap): BACKED UP ✓ (N cards) or NO BACKUP CARD ⚠. When a backup
-card cannot be made on this Mac (the cards were set up on another Mac, the card
-libraries are missing, or a dex-wallet-era wallet), the header shows the CLI's reason
-instead, in a plain badge, and no MAKE BACKUP CARD button. MAKE BACKUP CARD asks for Touch ID,
-then runs `card-backup --auto-swap`: tap the wallet card, and when the banner says
-so, swap it for a new blank card — no key press. CANCEL works until the new card is
-being written; from then on nothing interrupts the write (quitting waits for it). A
-CANCEL, quit or time limit that arrives just as the write begins does not cut it off
-either: the write finishes (after a CANCEL, MMM says it came too late).
-Right after a card wallet is created, NEW WALLET asks for a backup card at once:
-without one, losing the card loses the wallet. Creating a card wallet follows the
-same rule as a backup card: once the wallet CLI says the new card is being written,
-CANCEL is refused and quitting waits. If a creation stops part-way, MMM says whether
-the new card was left part-way set up (a key file for it appeared on this Mac):
-then do not rely on that card. If the wallet file was already saved when it stopped,
-MMM says so instead: UNLOCK it with the new card to check that the card opens it.
-A normal wallet's seed is shown once on NEW WALLET; if it arrives while you are on
-another tab, the notice says it is waiting there until you press I WROTE IT DOWN.
-
-## Forum sign-in (MineDifferent)
-
-FORUM tab → **SIGN IN TO MINEDIFFERENT**. One click mints a challenge, signs it
-with this Mac's wallet key (index 101, the forum identity convention) using the
-bundled engine, and opens a one-time login link in your browser. If your wallet
-carries a passphrase, type it in the field first — it travels only over the
-engine's stdin, never argv or the environment. Leave **Remember with Touch ID**
-checked and, after the first sign-in that works, the passphrase is kept in your
-login Keychain: from then on the button is SIGN IN WITH TOUCH ID and reading it
-back always demands Touch ID (or your Mac password when the lid is closed).
-FORGET SAVED PASSPHRASE removes it. No password, no email: the account IS the
-post-quantum signature.
-
-SHOW MY IDENTITY reads your forum name — the xid1… of key index 101 of the wallet
-that signs in (the one the saved passphrase belongs to, else the default) — with its
-mark and COPY. It is a sign-in name, not a payment address: nothing can be paid to
-it. Reading it may take the passphrase (typed, or the saved one after Touch ID) or a
-card tap; MMM then remembers it for that wallet file. The tab also shows the last
-sign-in from this Mac and opens the forum.
-
-The same thing from Terminal, if you prefer:
-
-```
-~/Applications/MMM.app/Contents/Resources/NerdMiner login
-```
+The dashboard's chart shows the last 150 readings (about five minutes), scaled to their own range (at least 1% of the peak), so real swings in the hashrate are visible instead of a flat line near the top.
 
 ## License
 

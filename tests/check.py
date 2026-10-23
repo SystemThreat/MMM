@@ -242,12 +242,6 @@ assert send.index('if let fresh {') < send.index('authorize()\n        }')
 # 6. CANCEL with nothing running closes the banner (done), cancelled only for a dismissed sign-in prompt
 assert 'emit(["type": "cardPrompt", "phase": dismissed ? "cancelled" : "done"])' in cancel
 page=(root/'app.js').read_text()
-assert "'BROADCASTING — CANNOT CANCEL'" in page and "if(cardLocked(cardPhase))return;" in page and "cardLocked=p=>p==='broadcasting'||p==='provisioning'" in page
-assert "txList('SENT:'" in page and "txList('NOT BROADCAST:',unsent.slice(1)" in page
-# NOT SENT only where the network ANSWERED with a refusal (msg.refused); a lost connection's txid stays "check this txid"
-unknown_path = body(page, "else{if(unsent[0])", "showReceipt(!!msg.partial")
-assert 'NOT SENT' not in unknown_path and "Check this txid on the explorer before re-sending" in unknown_path
-assert page.count("NOT SENT — THE NETWORK REFUSED IT") == 3 and "if(rf&&!ids.length){head.append(el('b','NOT SENT — THE NETWORK REFUSED IT'))" in page and "else if(rf){rest.push(el('small',`TRANSACTION ${rf.i} OF ${n}: NOT SENT — THE NETWORK REFUSED IT`" in page
 refused_done = body(source, 'func walletSendDone(', '// Sign in to MineDifferent')
 assert 'if let rj = walletRejected, r.code != 0 {' in refused_done and 'rj.i == 1' not in refused_done   # any refusal with nothing sent (the node path's check can name a later transaction) and 'walletFinish("failed", ["refused": true])' in refused_done and 'let refused = complete ? nil : walletRejected.flatMap { $0.i == txids.count + 1 ? $0 : nil }' in refused_done and '(d["broadcast_rejected"] as? Bool) == true' in refused_done
 assert 'if let r = cliRejected(line) { walletRejected = r; return }' in body(source, 'func walletProgress(', 'func backupPrompt(') and 'walletCardSeen = false; walletRejected = nil' in source
@@ -277,9 +271,6 @@ assert '"type": "error", "message": "Another wallet action is still running' in 
 save = body(source, 'func saveSetup(', 'func explorerLink(')
 assert save.index('guard !walletBusy else {') < save.index('PoolCredential.save(')
 assert 'explorerURL(base, path)' in body(source, 'func explorerLink(', 'func webView(') and '"explorer": walletSendFrom.explorer' in source
-status_case = next(l for l in page.split('\n') if l.startswith(" case 'walletStatus':"))
-assert 'cardPrompt(' not in status_case                                               # only cardPrompt's terminal phases close the banner
-assert "'FINISHING BROADCAST — MMM WILL QUIT WHEN IT IS DONE'" in page and "(m.card?' — KEEP THE CARD ON THE READER':'')" in page
 assert 'if !spare.contains(k) { orphans.append(pid) }' in wallet                   # the next launch leaves a committed orphan to finish
 # 9. the receipt grows to fit, a partial one takes the row, and says so when it must scroll
 css=(root/'style.css').read_text()
@@ -295,17 +286,21 @@ assert 'let unstarted = !walletCommitted || cardWriteUnstarted(r)' in backup and
 assert '["--json", "--file", f.path, "card-status"], passphrase: ""' in source and 'if let sel { cardStatusRefresh(sel) }' in source and 'state["backup"] = backupState(sel)' in source
 assert 'let refuse = { self.emit(self.walletLockedPrompt()) }' in cancel and 'emit(walletLockedPrompt(), menu: false)' in quit
 assert 'return ["type": "cardPrompt", "phase": "provisioning", "written": walletWritten, "new": walletNewCard]' in source and 'if walletCommitted, p["cardRead"] != nil { walletWritten = true }' in source   # nothing after the write starts unlocks CANCEL
-assert '"type": "walletCardCreated"' in source and "case 'walletCardCreated':" in page
+assert '"type": "walletCardCreated"' in source
 # 12. FORUM: identity from key 101 of the bound/default wallet, on request only, cached per file identity; SETUP keeps mining only
 ident = body(source, '@MainActor func forumIdentity(', '// ── WALLET tab: RECEIVE')
 assert '"identity", "--index", "101"]' in ident and 'ids[key] = xid' in ident and 'let key = walletFileKey(f.path)' in ident and 'gate: walletAuth)' in ident
 assert 'if let bound = ForumCredential.file, ForumCredential.exists()' in body(source, 'func forumWallet()', 'func forumIdCache()')
 assert 'case "forumIdentity": forumIdentity(' in source and 'forumIdentity' not in body(source, 'func webView(_ webView: WKWebView, didFinish', 'func emit(')   # never read at load
 assert 'let forumURL = URL(string: "https://minedifferent.com")!' in source and 'case "openForum": NSWorkspace.shared.open(forumURL)' in source
+import re
 html=(root/'index.html').read_text()
-vs,vf,vc=html.index('id="view-setup"'),html.index('id="view-forum"'),html.index('id="view-create"')
-assert vc < vf < vs and html.index('id="loginForm"') > vf and html.index('id="loginForm"') < vs and html.index('id="scheduleForm"') > vs
-assert html.index('id="tab-create"') < html.index('id="tab-forum"') < html.index('id="tab-setup"')
+# MMM is a miner: four tabs. WALLET, NEW WALLET and FORUM, their panels, the card banner and their page code are gone
+tabs = re.findall(r'id="tab-([a-z]+)"', html)
+assert tabs == ['dashboard', 'blocks', 'miners', 'setup'], tabs
+assert "const tabNames=['dashboard','blocks','miners','setup'];" in page
+for gone in ('view-wallet', 'view-create', 'view-forum', 'cardBanner', 'walletReceive', 'loginForm'): assert gone not in html and gone not in page, gone
+assert html.index('id="view-setup"') < html.index('id="scheduleForm"')
 # 13. RECEIVE: the QR is drawn natively, level M, no third-party code, no network
 qr=(root/'QRCode.swift').read_text()
 assert 'CIFilter(name: "CIQRCodeGenerator")' in qr and 'f.setValue("M", forKey: "inputCorrectionLevel")' in qr and 'shouldInterpolate: false' in qr and 'http' not in qr
@@ -331,14 +326,10 @@ assert '@container (max-height:250px){.control-panel .eyebrow{display:none}}' in
 assert 'max-height:720px){.control-panel:has(#schedOffer' not in css and '@media(max-height:900px){.intro .eyebrow{display:none}}@media(min-height:901px){.intro{height:auto}}' in css   # the dashboard tagline is never cut off
 assert "$('actionNote').classList.toggle('held',sched.paused&&!running)" in page
 assert 'grid-template-areas:"lbl amt" "who note"' in css and 'has-rv' not in css + page and 'rv-btn' not in css + page   # RECEIVE left the row; label over address, balance over note
-wstate = html[html.index('class="wallet-state"'):html.index('id="walletLockBtn"')]
-assert 'id="walletRxBtn"' in wstate and wstate.index('id="walletRxBtn"') < wstate.index('id="walletState"')   # RECEIVE sits in the header beside LOCK
-assert 'aria-modal="true"' in html and "for(const e of rvBeneath())e.inert=true" in page and "if(open&&back&&!$('walletRxBtn').hidden)$('walletRxBtn').focus()" in page
 note_rule = css[css.index('.backup-badge.note{'):css.index('}', css.index('.backup-badge.note{'))]
-assert 'white-space:normal' in note_rule and 'clamp' not in note_rule and 'overflow:hidden' not in note_rule and "cls='note';tip=text" in page and ".dex{" not in css   # the whole note, wrapped
+assert 'white-space:normal' in note_rule and 'clamp' not in note_rule and 'overflow:hidden' not in note_rule and ".dex{" not in css   # the whole note, wrapped
 assert '"note": text(d["note"], 600)' in source
 assert '.backup-prompt .text-button{padding:0;border:0;background:transparent' in css   # LATER is never a white box
-assert "$('rvQr').hidden=!!m.error" in page                                            # no empty white QR box on an error
 import re
 def hexrgb(h):
     h=h.lstrip('#'); h=''.join(c*2 for c in h) if len(h)==3 else h; return [int(h[i:i+2],16) for i in (0,2,4)]
@@ -358,7 +349,6 @@ assert start_all.count('guard process == nil, profile == p, !quitPending else { 
 assert source.count('47476') == 1 and 'var statsPort = 47476' in source and '"--stats-port",String(statsPort)]' in source and '"http://127.0.0.1:\\(statsPort)/health"' in source and '"http://127.0.0.1:\\(statsPort)/stats"' in source
 # 17. a reader reset: a fresh card wait on the banner, and the run's timeout grows by it
 assert 'if phase == "retry" { walletJob?.extend(by: TimeInterval(cardWaitBudget(ProcessInfo.processInfo.environment))) }' in source and 'let more = job.takeExtension()' in wallet
-assert "if(cardWaits(m.phase)&&(m.phase==='tap'||m.seconds))" in page and "Math.floor((on-15000)/4000)%2===0" in page   # the hint first at 15 s
 # 18. a later refusal in plain words; new card wallets commit their card write like a backup card
 assert 'let why = (d["broadcast_error"] as? String).map(plainBroadcastError) ??' in source
 create = body(source, 'func walletCreate(name rawName: String', 'func walletUnlock(')
@@ -373,12 +363,8 @@ assert 'var signal: Int32 = 0' in wallet and 'signal: p.terminationReason == .un
 assert 'let spared = force ? [] : committedPids()' in wallet and 'send(SIGKILL, to: alive(stoppable()))' in wallet and 'signalTrees([pid], grace: 5, force: true)' in wallet
 assert wallet.count('force: true') == 1 and 'timedOut: job.didExpire && p.terminationReason == .uncaughtSignal' in wallet
 # 22. page: RECEIVE closes on leaving WALLET; controls under the banner are inert while it shows; metrics fit; the log wraps; the heading is not cut
-assert "if(name!=='wallet'&&!$('walletReceive').hidden)closeReceive();" in page and "if(name==='create'&&!$('walletSeedBox').hidden)$('walletSeedBox').scrollIntoView({block:'nearest'});" in page
-assert "function bannerCover(up){for(const e of document.querySelectorAll('.view>.workspace:first-child>.panel-title :is(button,a,input,select),#payout'))e.inert=up}" in page
-assert "b.hidden=false;bannerCover(true);" in page and "if(end)cardTimer=setTimeout(bannerHide,4000);" in page and page.count('bannerHide()') >= 2 and "$('cardBanner').hidden=true" not in page.replace("function bannerHide(){$('cardBanner').hidden=true;", '')
 assert "main:has(#cardBanner:not([hidden])) :is(#view-setup,#view-create .workspace,#view-forum .workspace){scroll-padding-top:72px}" in css
-assert "notice('Write the seed of '+msg.name+' on paper now: it is on the NEW WALLET tab and is shown only once.',true)" in page
-assert "fitMetrics();" in body(page, 'function render(){', 'function setRunning(') and "renderLog();receiptFit();fitMetrics()" in page
+assert "fitMetrics();" in body(page, 'function render(){', 'function setRunning(') and "renderLog();fitMetrics()" in page
 assert '.engine-log pre{white-space:pre-wrap;word-break:normal;overflow-wrap:anywhere}' in css and 'while(n>1&&e.scrollHeight>e.clientHeight+1)' in page
 assert '@media(max-height:780px){.intro{align-items:flex-start}.intro h1{margin-top:3px}}' in css
 assert '@media(max-height:680px){#walletPanel:has(#walletReceipt:not([hidden])) .backup-badge.note{font-size:9px;line-height:1.2;letter-spacing:0}}' in css
@@ -387,8 +373,7 @@ assert '"broadcast rejected: missing-inputs"' in harness and 'bad-txns-inputs-mi
 # 19. the balances keep one whole row after a send: the receipt gives way first, down to 45 px (probe-verified at 940x612…1100x740)
 assert '.wallet-balances{flex:1;min-height:min(78px,max(44px,calc(100cqh - var(--wa-rest) - 45px)));' in css and 'container-type:size;--wa-rest:113px}' in css and '.wallet-body{--wa-rest:93px}}' in css and 'min-height:48px;overflow-y:auto' not in css
 assert '.metric strong{display:block;font-size:23px;margin-top:12px;letter-spacing:-1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' in css
-assert "const hashUnit=h=>h>=1e15?[1e15,'P']:h>=1e12?[1e12,'T']:h>=1e9?[1e9,'G']:[1e6,'M'];" in page and "b.scrollIntoView({block:'nearest'})" in page
-assert "document.addEventListener('keydown',rvKeys);" in page and '$(\'walletReceive\').onkeydown' not in page and 'aria-label="Receive XID" tabindex="-1"' in html
+assert "const hashUnit=h=>h>=1e15?[1e15,'P']:h>=1e12?[1e12,'T']:h>=1e9?[1e9,'G']:[1e6,'M'];" in page
 # 20. contrast: the focus ring on every surface it sits on (3:1), NUKE's small label (4.5:1, both themes, hover), placeholders (4.5:1)
 ring=re.search(r':focus-visible\{outline:3px solid (#[0-9a-fA-F]{6});',css).group(1)
 for bg in ['#ffffff','#c7ff2e','#ffe0d9','#f4f4ef','#10110e','#151810','#1d2313']: assert ratio(ring,bg)>=3,(ring,bg,ratio(ring,bg))
