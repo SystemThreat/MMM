@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/mmm-icon.png" width="160" height="160" alt="MMM app icon"></p>
+
 # MMM — Nerd Stats Edition
 
 Native Mac miner for xCoin Ӿ (XID). Mainnet is live since September 26, 2026 at 00:00 UTC (explorer: superknet.com); testnet A is retired. Supply is capped at 100,000,000 XID, issued by "the Annual Tenth": a 6.25 / 12.5 / 25 XID warm-up, 50 XID per block to block 220,000, then 10% less every 110,000 blocks down to a 1.5 XID floor.
@@ -15,6 +17,22 @@ Open MMM, enter the payout address, IP address (or hostname), port, worker and o
 Testnet A addresses (`txa1r…`) and mainnet addresses (`xpa1r…`) are validated as 32-byte witness-v3 bech32m addresses. Select the matching network. Mainnet requires an explorer reporting `hrp=xpa`, a final genesis charter and a block-zero timestamp; that timestamp is passed as the MetalDAG epoch base. Mainnet will not silently replace the selected testnet network. Configure its pool and explorer when they are available.
 
 The testnet explorer defaults to https://superknet.com. The existing miner documentation identifies the rehearsal pool as 172.96.186.49 port 3335; it is deliberately not prefilled. No wallet keys or seed phrases are needed. The GUI does not generate a wallet or invent a payout address.
+
+## Download
+
+Apple Silicon only. Get the latest `MMM-…-macOS-AppleSilicon.zip` from [Releases](https://github.com/SystemThreat/MMM/releases), unzip it and move **MMM.app** to Applications. The build is signed ad hoc, not notarized by Apple, so the first time: right-click MMM.app → Open → Open (or System Settings → Privacy & Security → Open Anyway). Each release lists the zip's SHA-256; check it with `shasum -a 256 <zip>`.
+
+## Mine on the GPU, the CPU or both
+
+Setup → **MINE ON** picks what hashes:
+
+- **GPU** (the default): the Apple GPU, as before.
+- **GPU + CPU**: the CPU mines too, from the same MetalDAG table the GPU built in shared memory (no second 4 GiB copy, no second build). It hashes its own nonce range of each job while the GPU runs its batch, and its shares go through the same pool connection. On an M3 Pro: GPU about 8.2 MH/s plus CPU about 4.9 MH/s on 10 threads, about 13 MH/s together against 9.1 MH/s for the GPU alone. The Mac runs hotter; the schedule's "Pause when the Mac is hot" still applies.
+- **CPU**: the CPU alone (the GPU still builds the table).
+
+**CPU CORES** sets the CPU threads; empty means all cores but two, so the Mac stays responsive. On every new DAG epoch the CPU's hashes are checked against the GPU kernel's; if they ever differ, CPU mining switches itself off, MMM says so and keeps mining on the GPU. The engine flags are `--device gpu|cpu|both` and `--cpu-threads N`; `/stats` adds `device`, `cpu_threads`, `gpu_hashrate_hps`, `cpu_hashrate_hps` and `cpu_note`.
+
+While the MetalDAG table builds (at start and at each 14-day epoch), **01 / YOUR MINER** shows a progress bar with the epoch, the GiB built and the percentage, and the status reads BUILDING DAG; `/stats` reports `dag_building` and `dag_build_progress`.
 
 ## Window and menu bar
 
