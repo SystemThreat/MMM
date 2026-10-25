@@ -18,7 +18,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     var launching = false
     var statsPort = 47476   // the engine's stats server (a test harness picks its own, never this one)
     var generation = 0
-    var profile: [String: String] = ["network":"testnet", "explorer":"https://superknet.com", "host":"", "port":"", "address":"", "worker":"", "mode":"solo"]
+    var profile: [String: String] = ["network":"testnet", "explorer":"https://superknet.com", "host":"", "port":"", "address":"", "worker":"", "mode":"solo", "device":"gpu", "cpuThreads":""]
     var lastStats: [String: Any] = [:]
     var signalSources: [DispatchSourceSignal] = []
     let page = Bundle.main.resourceURL!.appendingPathComponent("index.html")
@@ -255,6 +255,10 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         let host = p["host",default:""]
         guard !host.isEmpty, host.range(of: "^[a-zA-Z0-9.-]+$", options: .regularExpression) != nil, let port = UInt16(p["port",default:""]), port > 0, !p["worker",default:""].isEmpty else { emit(["type":"error","message":"Enter an IP address or hostname, port (1–65535), and worker name."]); return }
         var args = [address,"--pool",host + ":" + String(port),"--worker",p["worker",default:""],"--mode",p["mode"] == "shared" ? "shared":"solo","--stats-port",String(statsPort)]
+        // MINE ON: the GPU (as before), the CPU, or both; CPU threads default to all cores but two in the engine
+        let device = ["gpu","cpu","both"].contains(p["device",default:"gpu"]) ? p["device",default:"gpu"] : "gpu"
+        args += ["--device", device]
+        if device != "gpu", let n = Int(p["cpuThreads",default:""]), (1...256).contains(n) { args += ["--cpu-threads", String(n)] }
         if !isTest {
             do {
                 let stats = try await get(p["explorer",default:""] + "/api/stats")
@@ -331,7 +335,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                     "walletAddress", "walletHasPassphrase"] {          // last two: keys from earlier builds
             UserDefaults.standard.removeObject(forKey: key)
         }
-        profile = ["network":"testnet", "explorer":"https://superknet.com", "host":"", "port":"", "address":"", "worker":"", "mode":"solo"]
+        profile = ["network":"testnet", "explorer":"https://superknet.com", "host":"", "port":"", "address":"", "worker":"", "mode":"solo", "device":"gpu", "cpuThreads":""]
         password = ""; generation += 1; lastStats = [:]
         schedule = MiningSchedule(); schedulePaused = false; scheduleOverride = nil; cardStatusCache = [:]
         emit(["type": "reset"])

@@ -9,7 +9,7 @@ mmm_active_pid=""
 WALLET_SRC="${XCOIN_WALLET_SRC:-$HOME/x-Coin/xcoin-wallet}"
 mmm_wallet=0
 if [ -f "$WALLET_SRC/wallet_cli.py" ] && [ -f "$WALLET_SRC/card_seed.py" ] && [ -x "$WALLET_SRC/xcoin-wallet-cli" ] && [ -x "$WALLET_SRC/xcoin-wallet" ]; then mmm_wallet=1; fi
-mmm_total=$((5 + mmm_wallet))
+mmm_total=$((6 + mmm_wallet))
 trap 'if [[ -n "$mmm_active_pid" ]]; then kill -TERM "$mmm_active_pid" 2>/dev/null || true; fi; printf "\nBuild interrupted. Run ./build.sh again to finish.\n"; exit 130' INT TERM
 run_step() {
  local label="$1"
@@ -49,7 +49,8 @@ APP="$PWD/build/MMM.app"
 rm -rf "$APP"
 mkdir -p build/module-cache "$APP"/Contents/{MacOS,Resources} build/MMM.iconset
 run_step "Compile MMM window and menu bar" swiftc -module-cache-path build/module-cache -O App.swift MenuBar.swift Pickaxe.swift PoolCredential.swift ForumCredential.swift WalletService.swift Schedule.swift QRCode.swift -o "$APP/Contents/MacOS/MMM" -framework Cocoa -framework WebKit -framework Security -framework LocalAuthentication -framework IOKit -framework CoreImage
-run_step "Compile and optimize MetalDAG mining engine" swiftc -module-cache-path build/module-cache -O Engine/main.swift Engine/Login.swift Engine/StatsServer.swift Engine/MetalDAGEngine.swift Engine/MetalDAGShader.swift -o "$APP/Contents/Resources/NerdMiner" -framework Metal -framework CoreGraphics
+run_step "Compile CPU mining module (GPU + CPU mode)" clang++ -O3 -std=c++17 -Wall -Wextra -c Engine/cpu/md_cpu.cpp -o build/md_cpu.o
+run_step "Compile and optimize MetalDAG mining engine" swiftc -module-cache-path build/module-cache -O -import-objc-header Engine/cpu/md_cpu.h Engine/main.swift Engine/Login.swift Engine/StatsServer.swift Engine/MetalDAGEngine.swift Engine/MetalDAGShader.swift build/md_cpu.o -lc++ -o "$APP/Contents/Resources/NerdMiner" -framework Metal -framework CoreGraphics
 run_step "Bundle seven-tab dashboard and themes" cp -X index.html style.css app.js identicon.js pickaxe-white.svg "$APP/Contents/Resources/"
 if [[ $mmm_wallet == 1 ]]; then run_step "Bundle offline wallet CLI" bundle_wallet "$APP" "$WALLET_SRC"; else wallet_warning; fi
 run_step "Compile icon renderer" swiftc -module-cache-path build/module-cache Icon.swift -o build/make-icon

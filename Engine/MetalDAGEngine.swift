@@ -175,6 +175,7 @@ final class MetalDAGEngine {
     private let queue: MTLCommandQueue
     private let buildPipe: MTLComputePipelineState
     private let minePipe: MTLComputePipelineState
+    private let hashOutPipe: MTLComputePipelineState?   // metaldag_hash_out: the raw hash per nonce (CPU cross-check)
     private var dagBuf: MTLBuffer?
     private var dagItems: UInt32 = 0
     private(set) var currentEpoch: UInt64 = .max
@@ -188,6 +189,7 @@ final class MetalDAGEngine {
               let mp = try? device.makeComputePipelineState(function: mf),
               let q  = device.makeCommandQueue() else { return nil }
         self.device = device; self.queue = q; self.buildPipe = bp; self.minePipe = mp
+        self.hashOutPipe = library.makeFunction(name: "metaldag_hash_out").flatMap { try? device.makeComputePipelineState(function: $0) }
     }
 
     /// Convenience: compile the embedded MetalDAG kernels (metalDAGShaderSource) and init.
@@ -248,14 +250,47 @@ final class MetalDAGEngine {
         return sz.fullBytes
     }
 
+    /// The current DAG for the CPU: shared memory, so CPU threads read the very table the GPU built (no copy, no
+    /// second build). Valid until the next ensureDAG for another epoch, which only the mining loop calls, between
+    /// batches: a CPU batch never outlives the call that started it.
+    var dagWords: UnsafePointer<UInt32>? { dagBuf.map { UnsafePointer($0.contents().assumingMemoryBound(to: UInt32.self)) } }
+    /// The DAG's 128-byte entries (= 64-byte items / 2), as the CPU hashing indexes them.
+    var dagEntries: UInt32 { dagItems / 2 }
+
+    /// headerHash = keccak256(76-byte prefix) as 8 little-endian words, as mine() and the kernels take it.
+    static func headerHashWords(_ header76: [UInt8]) -> [UInt32] {
+        let hh = Keccak.keccak256(header76)
+        return (0..<8).map { MetalDAGCache.readU32(hh, $0 * 4) }
+    }
+
+    /// The GPU's raw hash for nonces nonceStart ..< nonceStart + count (8 words each, word 7 most significant), for
+    /// checking the CPU path against the GPU on every new DAG. nil when the GPU could not run it.
+    func gpuHashes(headerHash: [UInt32], nonceStart: UInt32, count: Int) -> [[UInt32]]? {
+        guard let dag = dagBuf, let pipe = hashOutPipe, count > 0, count <= 4096 else { return nil }
+        var di = dagItems, ns = nonceStart, hhw = headerHash
+        guard let hhBuf = device.makeBuffer(bytes: &hhw, length: 32, options: .storageModeShared),
+              let out = device.makeBuffer(length: count * 32, options: .storageModeShared),
+              let cb = queue.makeCommandBuffer(), let e = cb.makeComputeCommandEncoder() else { return nil }
+        e.setComputePipelineState(pipe)
+        e.setBuffer(dag, offset: 0, index: 0)
+        e.setBytes(&di, length: 4, index: 1)
+        e.setBuffer(hhBuf, offset: 0, index: 2)
+        e.setBytes(&ns, length: 4, index: 3)
+        e.setBuffer(out, offset: 0, index: 4)
+        e.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
+                          threadsPerThreadgroup: MTLSize(width: min(pipe.maxTotalThreadsPerThreadgroup, 64), height: 1, depth: 1))
+        e.endEncoding(); cb.commit(); cb.waitUntilCompleted()
+        guard cb.status == .completed else { return nil }
+        let w = out.contents().bindMemory(to: UInt32.self, capacity: count * 8)
+        return (0..<count).map { k in Array(UnsafeBufferPointer(start: w + k * 8, count: 8)) }
+    }
+
     /// Mine `count` nonces starting at `nonceStart` over the current DAG.
     /// header76 = the 76-byte block-header prefix (no nonce). targetMSWFirst = 8 words, [0]=MSW.
     func mine(header76: [UInt8], targetMSWFirst: [UInt32], nonceStart: UInt32, count: Int) -> (found: [Found], hashes: UInt32) {
         guard let dag = dagBuf else { return ([], 0) }
         // headerHash = keccak256(76-byte prefix) → 8 LE words.
-        let hh = Keccak.keccak256(header76)
-        var hhWords = [UInt32](repeating: 0, count: 8)
-        for i in 0..<8 { hhWords[i] = MetalDAGCache.readU32(hh, i*4) }
+        var hhWords = MetalDAGEngine.headerHashWords(header76)
         var di = dagItems
         var ns = nonceStart
         var tgt = targetMSWFirst

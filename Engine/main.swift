@@ -547,6 +547,15 @@ struct MineResult {
     var blockNonces: Set<UInt32> = []
     /// Why nothing was hashed (job refused, DAG unavailable), for the status line.
     var problem: String? = nil
+    /// Of `hashes`, how many the CPU did (--device cpu|both); the rest are the GPU's.
+    var cpuHashes: UInt64 = 0
+}
+
+/// Results of one CPU batch, handed back from its worker queue.
+final class CPUBatch {
+    var found: [MetalDAGEngine.Found] = []
+    var hashes: UInt64 = 0
+    var seconds: Double = 0
 }
 
 class GPUMiner {
@@ -560,6 +569,13 @@ class GPUMiner {
     var dagEngine: MetalDAGEngine?
     var dagParams: MetalDAGParams = .mainnet
     let dagBatchSize = 1 << 20   // 1M nonces/dispatch (each MetalDAG hash is ~100x an SHA hash)
+    // CPU mining (--device cpu|both): CPU threads hash from the DAG the GPU built (Engine/cpu/md_cpu.cpp), on their
+    // own nonce range of the same header, while the GPU runs its batch.
+    var useGPU = true
+    var cpuThreads = 0                    // 0 = no CPU mining
+    var cpuBatch: UInt32 = 1 << 15        // nonces per CPU call, adapted so it takes about as long as a GPU batch
+    var cpuCheckedEpoch: UInt64 = .max    // the DAG epoch the CPU path last matched the GPU on
+    var cpuDisabledReason: String?        // the check failed: GPU only from then on
 
     init?() {
         guard let dev = MTLCreateSystemDefaultDevice() else { return nil }
@@ -644,7 +660,22 @@ class GPUMiner {
                 return idle("Pool job is in MetalDAG epoch \(jobEpoch) but this Mac's clock says \(clockEpoch); not mining it (check the clock)")
             }
         }
-        guard engine.ensureDAG(nTime: nTime, params: dagParams) > 0 else { return idle(engine.lastError ?? "MetalDAG unavailable") }
+        let sizing = MetalDAGSizing.sizing(nTime: nTime, dagParams)
+        let built = engine.ensureDAG(nTime: nTime, params: dagParams) { p in
+            MinerStats.shared.update { s in
+                s.dagBuilding = p < 1; s.dagBuildProgress = p; s.dagEpoch = sizing.epoch; s.dagBytes = sizing.fullBytes
+                s.lastEvent = p < 1 ? String(format: "Building the MetalDAG table for epoch %llu: %.0f%%", sizing.epoch, p * 100) : "MetalDAG table ready"
+            }
+        }
+        MinerStats.shared.update { s in if s.dagBuilding { s.dagBuilding = false } }
+        guard built > 0 else { return idle(engine.lastError ?? "MetalDAG unavailable") }
+        let hhWords = MetalDAGEngine.headerHashWords(Array(header76.prefix(76)))
+        if cpuThreads > 0, cpuDisabledReason == nil, cpuCheckedEpoch != engine.currentEpoch {
+            if let why = checkCPU(engine, hh: hhWords) {
+                cpuDisabledReason = why
+                MinerStats.shared.update { s in s.cpuNote = why }
+            } else { cpuCheckedEpoch = engine.currentEpoch }
+        }
         let netTarget = MetalDAGEngine.targetWords(fromNBits: nBits)
         let shareTarget = MetalDAGEngine.targetWords(fromDifficulty: shareDifficulty)
         // mine against the EASIER (numerically larger) target so shares flow;
@@ -653,8 +684,42 @@ class GPUMiner {
         for i in 0..<8 {
             if shareTarget[i] != netTarget[i] { target = shareTarget[i] > netTarget[i] ? shareTarget : netTarget; break }
         }
-        let (found, hashes) = engine.mine(header76: Array(header76.prefix(76)),
+        let cpuOn = cpuThreads > 0 && cpuDisabledReason == nil
+        let gpuOn = useGPU || !cpuOn          // CPU-only whose check failed falls back to the GPU
+        let cpu = CPUBatch(), cpuDone = DispatchGroup()
+        if cpuOn, let dag = engine.dagWords {
+            let entries = engine.dagEntries, count = cpuBatch, threads = Int32(cpuThreads), tgt = target, hh = hhWords
+            let start = gpuOn ? nonceStart &+ UInt32(dagBatchSize) : nonceStart   // after the GPU's range of this header
+            cpuDone.enter()
+            DispatchQueue.global(qos: .default).async {
+                let t0 = Date()
+                var buf = [md_cpu_found](repeating: md_cpu_found(), count: 64)
+                let n = hh.withUnsafeBufferPointer { h in tgt.withUnsafeBufferPointer { t in
+                    md_cpu_search(dag, entries, h.baseAddress, t.baseAddress, start, count, threads, &buf, 64) } }
+                cpu.found = buf.prefix(Int(n)).map { f in
+                    var f = f
+                    let words = withUnsafeBytes(of: &f.hash) { Array($0.bindMemory(to: UInt32.self)) }
+                    return MetalDAGEngine.Found(nonce: f.nonce, hash: words)
+                }
+                cpu.hashes = UInt64(count); cpu.seconds = Date().timeIntervalSince(t0)
+                cpuDone.leave()
+            }
+        }
+        var (found, hashes): ([MetalDAGEngine.Found], UInt32) = ([], 0)
+        var gpuSeconds = 0.25                 // CPU only: aim for a quarter second per call
+        if gpuOn {
+            let t0 = Date()
+            (found, hashes) = engine.mine(header76: Array(header76.prefix(76)),
                                           targetMSWFirst: target, nonceStart: nonceStart, count: dagBatchSize)
+            gpuSeconds = Date().timeIntervalSince(t0)
+        }
+        cpuDone.wait()
+        if cpu.hashes > 0 {
+            found += cpu.found
+            // Next CPU call about as long as this GPU batch, moving halfway each time (smooth, no oscillation).
+            let want = Double(cpuBatch) * gpuSeconds / max(cpu.seconds, 0.001)
+            cpuBatch = UInt32(min(Double(1 << 24), max(1024, (Double(cpuBatch) * want).squareRoot())))
+        }
         let shares: [(nonce: UInt32, zeros: UInt32)] = found.map { (nonce: $0.nonce, zeros: UInt32(0)) }
         // Which of them are blocks: hash <= netTarget. The shader stores the hash
         // least-significant word first (results[].hash[i] = res[i]) and compares
@@ -681,9 +746,31 @@ class GPUMiner {
             }
             if zeros > bestZeros { bestZeros = zeros; bestNonce = f.nonce }
         }
-        var r = MineResult(hashes: UInt64(hashes), shares: shares, bestZeros: bestZeros, bestNonce: bestNonce)
+        var r = MineResult(hashes: UInt64(hashes) + cpu.hashes, shares: shares, bestZeros: bestZeros, bestNonce: bestNonce)
         r.blockNonces = blocks
+        r.cpuHashes = cpu.hashes
+        if let why = cpuDisabledReason, !useGPU { r.problem = why + "; mining on the GPU instead" }
         return r
+    }
+
+    /// The CPU path against the GPU on this DAG: the in-step path against the plain one, then 16 nonces against the
+    /// GPU kernel's own hashes. nil when they agree; otherwise why CPU mining is off.
+    func checkCPU(_ engine: MetalDAGEngine, hh: [UInt32]) -> String? {
+        guard let dag = engine.dagWords else { return "CPU mining off: no DAG to check against" }
+        let entries = engine.dagEntries
+        guard hh.withUnsafeBufferPointer({ md_cpu_selfcheck(dag, entries, $0.baseAddress) }) == 1 else {
+            return "CPU mining off: its interleaved hash failed the self-check"
+        }
+        let base: UInt32 = 0x13572468
+        guard let gpuH = engine.gpuHashes(headerHash: hh, nonceStart: base, count: 16) else {
+            return "CPU mining off: the GPU cross-check could not run"
+        }
+        for k in 0..<16 {
+            var out = [UInt32](repeating: 0, count: 8)
+            hh.withUnsafeBufferPointer { md_cpu_hash(dag, entries, $0.baseAddress, base &+ UInt32(k), &out) }
+            if out != gpuH[k] { return "CPU mining off: its hash differs from the GPU's on epoch \(engine.currentEpoch)" }
+        }
+        return nil
     }
 }
 
@@ -1182,6 +1269,8 @@ func main() {
     var baseOverride: UInt64? = nil     // --base <unixtime>: align MetalDAG epoch to a node
     var statsPort: UInt16 = statsDefaultPort   // --stats-port N: companion HTTP stats on 127.0.0.1
     var statsEnabled = true                    // --no-stats: don't start the companion server
+    var device = "gpu"                         // --device gpu|cpu|both
+    var cpuThreadsArg: Int? = nil              // --cpu-threads N (default: all cores but two)
     var ai = 1
     while ai < args.count {
         let a = args[ai]
@@ -1204,6 +1293,13 @@ func main() {
             ai += 2
         } else if a == "--no-stats" {
             statsEnabled = false; ai += 1
+        } else if a == "--device", ai + 1 < args.count {
+            device = args[ai + 1].lowercased()
+            guard ["gpu", "cpu", "both"].contains(device) else { exitWithError("--device must be gpu, cpu or both (got '\(args[ai + 1])')") }
+            ai += 2
+        } else if a == "--cpu-threads", ai + 1 < args.count {
+            guard let n = Int(args[ai + 1]), n >= 1, n <= 256 else { exitWithError("--cpu-threads needs a number 1-256 (got '\(args[ai + 1])')") }
+            cpuThreadsArg = n; ai += 2
         } else if !a.hasPrefix("--"), minerAddress.isEmpty {
             minerAddress = a; ai += 1
         } else { ai += 1 }
@@ -1220,6 +1316,8 @@ func main() {
         print("                   (testnet A is built in; mainnet needs it once its genesis is mined)")
         print("  --stats-port N   companion stats server port (default \(statsDefaultPort), loopback only)")
         print("  --no-stats       do not start the companion stats server")
+        print("  --device gpu|cpu|both  mine on the GPU (default), the CPU, or both; the CPU reads the GPU's DAG")
+        print("  --cpu-threads N  CPU threads for --device cpu|both (default: all cores but two)")
         print("Testnet A: NerdMiner txa1r... --pool 172.96.186.49:3335 --worker rehearsal1")
         print("Forum:     NerdMiner login --index 101")
         print("Telemetry is disabled by default; set NERDMINER_TELEMETRY=1 to opt in.")
@@ -1292,6 +1390,10 @@ func main() {
         exitWithError("mainnet MetalDAG base time unknown: pass --base <genesis unix time>")
     }
     print("[+] GPU: \(gpu.gpuName)")
+    gpu.useGPU = device != "cpu"
+    gpu.cpuThreads = device == "gpu" ? 0 : (cpuThreadsArg ?? max(1, Int(md_cpu_cores()) - 2))
+    let deviceLine = device == "gpu" ? "GPU" : device == "cpu" ? "CPU (\(gpu.cpuThreads) threads; the GPU builds the DAG)" : "GPU + CPU (\(gpu.cpuThreads) CPU threads)"
+    print("[+] Mining on: \(deviceLine)")
 
     // Connect to pool
     print("[+] Connecting to \(cfg.host):\(cfg.port)...")
@@ -1342,6 +1444,8 @@ func main() {
     clockFormatter.dateFormat = "yyyy-MM-dd  HH:mm:ss"
     var lastDisplay = Date()
     var hashesThisSecond: UInt64 = 0
+    var cpuHashesThisSecond: UInt64 = 0
+    var cpuHashrate: Double = 0
     var lastHashUpdate = Date()
     var lastHashratePublish = Date.distantPast
     var hashrate: Double = 0
@@ -1375,6 +1479,8 @@ func main() {
         s.network = networkName
         s.mode = mode
         s.gpu = gpu.gpuName
+        s.device = device
+        s.cpuThreads = gpu.cpuThreads
         s.chip = chipName
         s.difficulty = stratum.difficulty
         s.systemMemoryBytes = systemMemoryBytes()
@@ -1415,6 +1521,8 @@ func main() {
             s.poolConnected = working
             s.poolStatus = poolStatus
             s.hashrateHps = hashrate
+            s.cpuHashrateHps = cpuHashrate
+            s.gpuHashrateHps = max(0, hashrate - cpuHashrate)
             s.totalHashes = totalHashes
             s.uptimeS = Int(now.timeIntervalSince(startTime))
             s.sharesFound = sharesFound
@@ -1440,6 +1548,7 @@ func main() {
             "  \(ansiDim)Native MetalDAG GPU Mining for macOS\(ansiReset)",
             rule,
             "  GPU:       \(ansiGreen)\(gpu.gpuName)\(ansiReset)",
+            "  Mining on: \(ansiGreen)\(deviceLine)\(ansiReset)\(gpu.cpuThreads > 0 ? "   \(ansiDim)GPU \(formatHashrate(max(0, hashrate - cpuHashrate))) + CPU \(formatHashrate(cpuHashrate))\(ansiReset)" : "")",
             "  Chip:      \(ansiGreen)Apple Silicon / \(machineArchitecture())\(ansiReset)",
             "  Network:   \(ansiYellow)\(network)\(ansiReset)",
             "  Pool:      \(ansiYellow)\(cfg.host):\(cfg.port)\(ansiReset)   Worker: \(workerName)",
@@ -1472,7 +1581,7 @@ func main() {
 
         guard let job = stratum.currentJob, !stratum.extranonce1.isEmpty else {
             let now = Date()
-            hashrate = 0; hashesThisSecond = 0; lastHashUpdate = now   // don't average the outage into the next rate
+            hashrate = 0; hashesThisSecond = 0; cpuHashrate = 0; cpuHashesThisSecond = 0; lastHashUpdate = now   // don't average the outage into the next rate
             if now.timeIntervalSince(lastDisplay) >= 1.0 { publish(now) }
             Thread.sleep(forTimeInterval: 0.1)
             return
@@ -1492,6 +1601,7 @@ func main() {
         }
 
         hashesThisSecond += result.hashes
+        cpuHashesThisSecond += result.cpuHashes
         totalHashes += result.hashes
 
         if result.bestZeros > 0 && Int(result.bestZeros) > bestZeros {
@@ -1502,7 +1612,8 @@ func main() {
         if now.timeIntervalSince(lastHashUpdate) >= 1.0 {
             let elapsed = now.timeIntervalSince(lastHashUpdate)
             hashrate = Double(hashesThisSecond) / elapsed
-            hashesThisSecond = 0
+            cpuHashrate = Double(cpuHashesThisSecond) / elapsed
+            hashesThisSecond = 0; cpuHashesThisSecond = 0
             lastHashUpdate = now
 
             if now.timeIntervalSince(lastHashratePublish) >= 2.0 {

@@ -384,3 +384,22 @@ print('Page layout fixes (hero min-width, lime panel sized by its hero with the 
 print('Balances keep a whole row after a send, metric values never wrap (and shrink to fit), focus ring / NUKE / placeholder contrast, RECEIVE keys document-wide and closed off its tab, seed box in view, controls under the card banner inert, engine log wrapped, dashboard heading whole passed')
 print('SIGKILL spared for a run committed during the grace, timeouts only for runs the timeout ended, refusals with nothing sent for any transaction, and a written new-card wallet file never reported as not created passed')
 print('Password pipe, JSON escaping, log redaction, wallet events/cancel/split contract, broadcast commit, cancel reporting, Touch ID gates, fresh balance check, quit deferral and single quit path, send record, message types, save refusal, explorer links, backup-card and new-card commit and cancel, card-status, forum identity, RECEIVE QR, schedule contract and quit guard (after network waits too), refused sends in plain words, reader-reset timeout, and JS syntax passed')
+
+# 21. GPU + CPU mining: the CPU module on a synthetic DAG; the app passes MINE ON to the engine; the engine accepts it
+import subprocess as _sp
+exe=root/'build/cpu_lanes_test'
+_sp.run(['clang++','-O2','-std=c++17','-Wall','-Wextra','-Werror',str(root/'tests/cpu_lanes_test.cpp'),str(root/'Engine/cpu/md_cpu.cpp'),'-o',str(exe)],check=True)
+print(_sp.run([str(exe)],check=True,capture_output=True,text=True).stdout.strip())
+engine=(root/'Engine/main.swift').read_text(); appsrc=(root/'App.swift').read_text(); buildsh=(root/'build.sh').read_text()
+assert 'args += ["--device", device]' in appsrc and '"device":"gpu", "cpuThreads":""' in appsrc
+assert '["gpu","cpu","both"].contains(p["device",default:"gpu"])' in appsrc                  # anything else mines on the GPU, as before
+assert 'else if a == "--device"' in engine and 'else if a == "--cpu-threads"' in engine
+assert 'max(1, Int(md_cpu_cores()) - 2)' in engine                                          # all cores but two by default
+assert 'nonceStart &+ UInt32(dagBatchSize) : nonceStart' in engine                         # the CPU's range follows the GPU's
+assert 'func checkCPU(' in engine and 'cpuDisabledReason = why' in engine                   # a mismatch turns CPU mining off
+assert '-import-objc-header Engine/cpu/md_cpu.h' in buildsh and 'build/md_cpu.o -lc++' in buildsh
+html=(root/'index.html').read_text(); js=(root/'app.js').read_text()
+assert '<select name="device"><option value="gpu">GPU</option><option value="both">GPU + CPU</option><option value="cpu">CPU</option></select>' in html
+assert 'id="dagBuild" class="dag-build" hidden' in html and 'role="progressbar"' in html
+assert "$('dagBuild').hidden=!building" in js and "miner.dag_building?'■ BUILDING DAG'" in js
+print('GPU + CPU mining: the MINE ON setting reaches the engine, the CPU range and cross-check, the build, and the DAG progress bar passed')

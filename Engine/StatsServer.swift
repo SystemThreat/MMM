@@ -61,6 +61,13 @@ struct MinerStatsSnapshot {
     var dagEpochNextS: Int = 0
     var dagBytes: UInt64 = 0
     var dagTrafficGBs: Double = 0
+    var dagBuilding: Bool = false      // the GPU is building the MetalDAG table now
+    var dagBuildProgress: Double = 0   // 0…1 while dagBuilding (0 = the CPU cache step before the GPU part)
+    var device: String = "gpu"         // --device: gpu | cpu | both
+    var cpuThreads: Int = 0            // CPU mining threads (0 = none)
+    var gpuHashrateHps: Double = 0
+    var cpuHashrateHps: Double = 0
+    var cpuNote: String = ""           // why CPU mining switched itself off, if it did
     var systemMemoryBytes: UInt64 = 0
     var lastEvent: String = ""
 
@@ -94,6 +101,13 @@ struct MinerStatsSnapshot {
         f.append(("dag_epoch_next_s", String(dagEpochNextS)))
         f.append(("dag_bytes", String(dagBytes)))
         f.append(("dag_traffic_gbs", jsonNumber(dagTrafficGBs)))
+        f.append(("dag_building", dagBuilding ? "true" : "false"))
+        f.append(("dag_build_progress", jsonNumber(dagBuildProgress)))
+        f.append(("device", jsonString(device)))
+        f.append(("cpu_threads", String(cpuThreads)))
+        f.append(("gpu_hashrate_hps", jsonNumber(gpuHashrateHps)))
+        f.append(("cpu_hashrate_hps", jsonNumber(cpuHashrateHps)))
+        f.append(("cpu_note", jsonString(cpuNote)))
         f.append(("system_memory_bytes", String(systemMemoryBytes)))
         f.append(("last_event", jsonString(lastEvent)))
         f.append(("ts", String(Int(Date().timeIntervalSince1970))))
